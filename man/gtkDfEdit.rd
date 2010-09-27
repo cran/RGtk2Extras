@@ -14,7 +14,8 @@ gtkDfEdit
 }
 \usage{
 gtkDfEdit(items, dataset.name = deparse(substitute(items)), 
-size.request=c(500, 300), col.width=64, pretty_print=F,
+size.request=c(500, 300), col.width=64, pretty_print=TRUE,
+sprintf_format = "\%.6G",
 dataset.class="data.frame", envir=.GlobalEnv)
 }
 %- maybe also 'usage' for other objects documented here.
@@ -32,7 +33,10 @@ The name of the data frame object to modify.
   The column width.
 }
   \item{pretty_print}{
-  Apply rounding and pretty printing of numerics.
+  Apply pretty printing of numeric data.
+}
+  \item{sprintf_format}{
+  Formatting for numeric data.
 }
   \item{dataset.class}{
   Class to coerce data object in global environment to (frame or matrix)
@@ -43,9 +47,9 @@ The name of the data frame object to modify.
 }
 \details{
 
-gtkDfEdit is an RGtk2 based data frame viewer and editor megawidget intended to
+gtkDfEdit is an RGtk2 based data frame viewer and editor widget intended to
 be familiar to spreadsheet users and to form part of larger GUI projects. 
-It provides a way to edit a data frame (see Notes for a description).
+It provides a way to edit a data frame or matrix (see Notes for a description).
 
 Changes made in the spreadsheet will appear instantly in the data frame. 
 
@@ -63,13 +67,14 @@ The $getColumnNames method returns the column names.
 
 The $getRowNames method returns the row names.
 
-The $setColumnName(idx, new.name) method sets the column name at a particular index.
+The $setColumnName(idx, new.name) method sets the column name at a particular 
+index.
 
 
 
 }
 \value{
-A GtkContainer containing the megawidget.
+A GtkContainer containing the widget.
 }
 \author{
 Tom Taverner <Thomas.Taverner@pnl.gov>, with contributions from John Verzani
@@ -115,7 +120,8 @@ column headers then pressing Delete, or else by right-clicking on the row names
 or column headers to bring up the context menu then clicking "Clear Contents".
 
 Changes made in the data frame editor are automatically and invisibly updated 
-so the R data frame object is kept synchronous with the grid display.
+in the linked R data frame object. However, changes made in the linked data 
+frame object are NOT updated in the grid display. 
 
 Ctrl-Z undoes any editing action on the grid. Actions that have side effects on
 the data, such as coercion, are not fully undoable, which reflects the way R
@@ -205,6 +211,9 @@ Integer, Logical, Character, Factor. Factor is a special enumerated data type
 (also known as a category) which can have its attributes set using the in-built
 Factor Editor (see below). To coerce a data column, just open this menu and 
 click the desired type.
+
+Factors can be coerced differently; either to the values of their levels or to 
+the integer ordinal value of those levels.
 
 The column context menu function "Set As Row Names" sets the
 contents of the column as the data frame's row names. The menu function 

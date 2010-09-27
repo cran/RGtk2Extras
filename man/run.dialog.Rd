@@ -130,10 +130,28 @@ The name \code{arg1.dialogItem} in the MyFunction.dialog markup list
    This can be useful if your function plots something, and the user 
    is likely to want to try different plot settings.\cr
 
+ \code{show.progress = TRUE} tells run.dialog that the function should display 
+  a dialog while it is executing to allow monitoring of progress and cancellation.
+  This is based on Felix Andrews' interrupt.c from playwith. If this markup is 
+  present then when "OK" is pressed a small modal Progress dialog will appear 
+  with a cancel button. When this button is pressed, an interrupt signal is sent 
+  and the Progress dialog is destroyed and the main dialog is destroyed if 
+  appropriate. This is not guaranteed to stop all running R processes.
+  Moreover, if your function arguments contain \code{progressbar} or \code{progresslabel},
+  then \code{run.dialog} will pass your function a gtkProgressBar and a gtkLabel
+  respectively, to allow user monitoring of progress via \code{progressbar$setFraction()}
+  or \code{progressbar$setText()}. See ?gtkProgressBar and ?gtkLabel. \cr
+  Note 1: if your function updates the progress bar or progress label, it should
+  give these arguments default NULL values and check they are not missing before
+  using them, otherwise it will break if run without a dialog.\cr
+  Note 2: if your dialog markup (as opposed to your function) contains progressbar 
+  or progresslabel arguments, then run.dialog will not pass those widgets to 
+  your function automatically.\cr
+
+                     
  \code{long.running = TRUE} tells run.dialog that the function will 
-  run for a long time before returning. This is basically an attempt to get 
-  around R not being multithreaded, and doesn't work anywhere but 
-  Windows yet. In Windows, it will do the following things:\cr
+  run for a long time before returning. This is fairly experimental, and doesn't
+  work anywhere but Windows yet. In Windows, it will do the following things:\cr
    1. Save the R session to the current working directory.\cr
    2. Create a batch file containing a command to load the R session,
      delete the session file, carry out the function call, and a command 
@@ -189,6 +207,9 @@ The name \code{arg1.dialogItem} in the MyFunction.dialog markup list
 
   As well as that, there are set.value() and get.value() methods that work on 
   most widgets, and also signals which they can emit (see Signal Handling).
+  set.value() takes an optional \code{propagate} argument which is TRUE by 
+  default. If this is set to FALSE, then the widget won't emit its signal.\cr
+  
   This list specifies what the set.value and get.value methods return for each
   widget and what behavior leads to each widget emitting a signal.\cr
 
@@ -227,7 +248,7 @@ Set and Get Calls:\cr
  any label markup.\cr
  Set and Get Calls:\cr
    get.value(item) returns the check box state.\cr
-   set.value(item, value) sets the item to the logical value.\cr
+   set.value(item, value, propagate=TRUE) sets the item to the logical value.\cr
  Signals:\cr
    "default" is emitted when the check box is changed.\cr
  
@@ -242,7 +263,7 @@ Set and Get Calls:\cr
  Set and Get Calls:\cr
    get.value(item) returns the selected choice.\cr
    get.value(item, selected=F) returns all of the choices in the choiceItem.\cr
-   set.value(item, value) sets the available choices in the choiceItem to 
+   set.value(item, value, propagate=TRUE) sets the available choices in the choiceItem to 
     the vector (or possibly NULL) value.\cr
  Signals:\cr
    "default" is emitted when the selection is changed. Note that popping up 
@@ -255,7 +276,7 @@ Set and Get Calls:\cr
  Markup for radiobuttonItem is the same as choiceItem.\cr
  Set and Get Calls:\cr
    get.value(item) returns the selected choice.\cr
-   set.value(item, value) sets the item to the value and throws an 
+   set.value(item, value, propagate=TRUE) sets the item to the value and throws an 
      error if it is not one of the available choices.\cr
  Signals:\cr
      "default" is emitted when the selection is changed.\cr
@@ -313,7 +334,7 @@ Set and Get Calls:\cr
     (possibly zero-length) vector containing the selected strings.\cr
   Set and Get Calls:\cr
     get.value(item) returns the selected values.\cr
-    set.value(item, letters[1:5]) sets the values in the item.\cr
+    set.value(item, letters[1:5], propagate=TRUE) sets the values in the item.\cr
    Signals:\cr
      "default" is emitted when the check boxes are altered anywhere.\cr
 
@@ -330,7 +351,7 @@ Set and Get Calls:\cr
   Set and Get Calls:\cr
     get.value(item, select=TRUE) returns the selected values only.\cr
     get.value(item, select=FALSE) returns all values.\cr
-    set.value(item, letters[1:5]) sets the values in the list item.\cr
+    set.value(item, letters[1:5], propagate=TRUE) sets the values in the list item.\cr
   Signals:\cr
    "default" is emitted when the list is clicked anywhere.\cr
    "add" is emitted when the right-arrow button is clicked.\cr
@@ -389,7 +410,7 @@ Set and Get Calls:\cr
   You can do this using the \code{get.value(widget)} and 
   \code{set.value(widget)} calls. In some cases these calls can take 
   additional arguments. See the DensityHistogram example below.\cr
-    
+      
   Actually, we could use the built-in function toggle.sensitive which does the
   same thing (the commented-out #signal line). In this case, passing a string
   as the signaling function will make run.dialog search for a function with this 
@@ -458,7 +479,14 @@ Set and Get Calls:\cr
 
   run.dialog(DensityHistogram)
   # end example 2
+  
+    # Angle display demo, from Graham Williams
+  demo(MakeAngle)
+  
+    # Cancel dialog demo
+  demo(ProgressBar)
 
 }
+
 }
 \keyword{interface}

@@ -12,5 +12,6 @@ gtkDfEditSetDatasetName(x, new.name)
 \item{new.name}{new.name}
 }
 \details{
+Sets the name of the data set to new.name, in .GlobalEnv
 }
 \keyword{interface}

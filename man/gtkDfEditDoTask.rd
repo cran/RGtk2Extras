@@ -8,11 +8,11 @@
 \item{task}{The task list to implement.}
 }
 \note{
-A task is a list of one or more action items.
-
 An action item is a list containing the action function name and its arguments: 
 
 \code{list(func=action.name, arg=list(arg1=value1, arg2=value2, ...))}
+
+A task is a list of one or more action items.
 
 When the task is passed to \code{x$doTask} the backing data frame will be 
 updated sequentially with each action and the model updated after the action 
@@ -66,7 +66,12 @@ type, for example NA.opt=NA_real_ will make the NA columns inserted numeric.
 }
 
 \examples{
-obj <- dfedit(iris)
+
+win = gtkWindowNew("gtkDfEdit Demo")
+obj <- gtkDfEdit(iris)
+win$add(obj)
+win$show()
+
 
 task <- list(
   list(func="ChangeCells", 

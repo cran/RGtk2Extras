@@ -1,6 +1,6 @@
 \name{gtkDfEditCommandData}
 \alias{gtkDfEditCommandData}
-\title{Return all tables}
+\title{Open the Command Editor}
 \description{
 Applies a string command
 }
@@ -11,5 +11,7 @@ gtkDfEditCommandData(x)
 \item{x}{string x}
 }
 \details{
+This function opens the command editor which allows R commands to be applied to
+a selected data submatrix. See ?gtkDfEdit
 }
 \keyword{interface}

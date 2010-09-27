@@ -1,3 +1,4 @@
+useDynLib(RGtk2Extras, rgtk2extras_interrupt)
 export(my_choose_files)
 export(get_all_tables)
 export(set.value)

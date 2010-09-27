@@ -38,13 +38,15 @@ my.getwd <- function() gsub("(.*)/$", "\\1", getwd()) # for "C:/" we want to rem
 .DATA_OBJECTS <- c("data.frame", "matrix")
 
 # Utility function for choosing file with filters in platform independent way
-my_choose_files <- function(fn ="*.*", multi=FALSE, filters=NULL, type = "open"){
-  stopifnot(type%in%c("open", "save", "selectdir"))
+my_choose_files <- function(fn ="*.*", multi=FALSE, filters=NULL, type = "open", caption=NULL){
+  captions <- list(open = "Select File", save= "Save File", selectdir = "Select Directory")
+  stopifnot(type%in%names(captions))
+  if(is.null(caption)) caption <- captions[[type]]
   if(identical(.Platform$OS.type, "windows")){
     if(identical(type, "selectdir")) {
       f <- choose.dir(fn)
     } else {
-      f <- choose.files(fn, multi = multi, filters=filters)
+      f <- choose.files(fn, multi = multi, filters=filters, caption=caption)
     }
   } else {
       f <- gfile(fn, multi = multi, type = type)
@@ -158,18 +160,28 @@ stringItem <- function(value, name="", multi=F, ...){
     item$setText(value)
     item$setData("name", name)
     item$setData("get.value", gtkEntryGetText)
-    item$setData("set.value", function(item, value) item$setText(value))
+    item$setData("set.value", function(item, value, ...) item$setText(value))
     gSignalConnect(item, "activate", function(...) {
       signal(item)
     })    
   } else {    
-    txtItem <- gtext()
-    svalue(txtItem) <- value
-    item <- getToolkitWidget(txtItem)$getParent()    
+    item <- gtkVBoxNew()    
+    sw <- gtkScrolledWindowNew()
+    txt <- gtkTextViewNew()
+    sw$add(txt)
+   	sw$setPolicy("automatic", "automatic")
+    buf <- txt$getBuffer()
+    item$add(sw)
     item$setData("name", name)    
-    item$setData("get.value", function(item) svalue(txtItem))
-    item$setData("set.value", function(item, value) function(item, value) svalue(txtItem) <- value)      
+    item$setData("get.value", function(item)
+       buf$getText(buf$getStartIter()$iter, buf$getEndIter()$iter))
+    item$setData("set.value", function(item, value, ...) buf$setText(value))
     item$setData("expand", TRUE)  # expand in column    
+    gSignalConnect(txt, "key-press-event", function(obj, evt) {
+      if(evt[["keyval"]] == GDK_Return && (as.flag(evt[["state"]] & GdkModifierType['control-mask'])))
+         signal(item)
+      return(FALSE)
+    }) 
   }
   return(item)
 }
@@ -195,7 +207,7 @@ variableStringItem  <- function(value, name="", show.arrows, ...){
   }) 
 
   hbox0$setData("name",name)
-  hbox0$setData("set.value", function(item, value){  
+  hbox0$setData("set.value", function(item, value, ...){  
     ent <- item$getData("ent")$getText()
     new_string <- paste(value, collapse = "; ")
     if(nchar(ent)) new_string <- paste(ent, new_string)
@@ -252,7 +264,7 @@ choiceItem <- function(value=NULL, values=NULL, item.labels=NULL, name="", ...){
     }
   })
 
-  item$setData("set.value", function(item, values){
+  item$setData("set.value", function(item, values, selected=NULL, ...){
     old.values <- item$getData("values")
     gSignalHandlerBlock(item, item$getData("changed.id"))
     if(length(old.values) > 0)
@@ -265,8 +277,10 @@ choiceItem <- function(value=NULL, values=NULL, item.labels=NULL, name="", ...){
       sr <- item$getSizeRequest()
       if(sr$width > MAX_WIDTH) item$setSizeRequest(MAX_WIDTH, -1)      
     }
-	  if(length(values)) {
+	  if(is.null(selected) && length(values)) {
       item$setActive(0)
+    } else if (!is.null(selected) && length(selected)==1 && selected%in%values){
+      item$setActive(which(values%in%selected)-1)
     }
     gSignalHandlerUnblock(item, item$getData("changed.id"))        
   })
@@ -290,7 +304,7 @@ buttonItem <- function(value, name = "", ...){
     item$getData("value")
   })
 
-  item$setData("set.value", function(item, value){
+  item$setData("set.value", function(item, value, ...){
     item$setData("value", value)
   })
 
@@ -346,9 +360,9 @@ radiobuttonItem <- function(value=NULL, values=NULL,
     return(values[idx])
   })
   
-  item$setData("set.value", function(x, value){
+  item$setData("set.value", function(x, value, ...){  
     values <- x$getData("values")
-    stopifnot(value%in%values)
+    stopifnot(value%in%values || length(value) == 1)
     grb <- rev(x$getData("grb")$getGroup())
     idx <- which(values==value)
     grb[[idx]]$setActive(TRUE)
@@ -368,7 +382,7 @@ trueFalseItem <- function(value, name="", label = NULL, ...){
   item$setData("name", name)
   item$setData("suppress.frame", TRUE)  
   item$setData("get.value", gtkToggleButtonGetActive)
-  item$setData("set.value", function(item,value){
+  item$setData("set.value", function(item,value, ...){
     item$setActive(value)
     #signal(item, "default")
   })
@@ -384,9 +398,9 @@ numericItem <- function(value, name="", ...){
   item$setData("get.value", function(x) {
       as.numeric(x$getText())
     })
-  item$setData("set.value", function(item, value) {
+  item$setData("set.value", function(item, value, propagate=TRUE, ...) {
     item$setText(value)
-    signal(item, "default")
+    if(propagate) signal(item, "default")
   })
   return(item)
 }
@@ -406,9 +420,9 @@ integerItem <- function(value, name="", from=-.Machine$integer.max, to=.Machine$
   item$setData("get.value", function(x) {
      x$getValue()
     })
-  item$setData("set.value", function(item, value) {
+  item$setData("set.value", function(item, value, propagate=TRUE, ...) {
     item$setValue(value)
-    signal(item, "default")
+    if(propagate) signal(item, "default")
   })
   return(item)
 }
@@ -422,14 +436,18 @@ rangeItem <- function(value, name="", from=0, to=100, by=1, ...){
   item <- gtkHScaleNewWithRange(min=from, max=to, step=by)
   if(length(value) > 1) value <- value[1]  
   item$setValue(value)
+  gSignalConnect(item, "value-changed", function(obj){
+    signal(item, "default")
+    return(value)
+  })
     
   item$setData("name", name)
   item$setData("get.value", function(x) {
      x$getValue()
     })
-  item$setData("set.value", function(item, value){
+  item$setData("set.value", function(item, value, propagate=TRUE, ...){
     item$setValue(value)
-    signal(item, "default")
+    if(propagate) signal(item, "default")
   })
   return(item)
 }
@@ -451,7 +469,8 @@ fileItem <- function(value, name="", multi = FALSE, filters=NULL, extension = "*
   item$setData("label", label)
   gSignalConnect(button, "clicked", data=label, function(obj, label){
     #tryCatch({
-     fn <- file.path(my.getwd(), paste("*", extension, sep=""))
+     #fn <- file.path(my.getwd(), paste("*", extension, sep=""))
+     fn <- extension
      if(identical(.Platform$OS.type, "windows")){
        if(identical(type, "selectdir")) 
          f <- choose.dir(fn)
@@ -485,9 +504,9 @@ fileItem <- function(value, name="", multi = FALSE, filters=NULL, extension = "*
      return(rv)
    })
 
-  item$setData("set.value", function(x, value) {
+  item$setData("set.value", function(x, value, propagate=TRUE, ...) {
     x$getData("label")$setText(deparse(value))
-    signal(item, "default")
+    if(propagate) signal(item, "default")
   })
 
   return(item)
@@ -515,7 +534,8 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
     ow = options("warn")[[1]]
     options(warn = -1)  # suppress warnings from vb
     label=data      
-    dialog <- gtkDialog("Select...", parent.window, "modal", "gtk-close", 1,show = T)
+      # Changed to "select" from "gtk-close"
+    dialog <- gtkDialog("Select...", parent.window, "modal", "Select", 1,show = T)
     dialog$setSizeRequest(400, 300)
     
     dialog$setPosition(GtkWindowPosition["center-on-parent"])              
@@ -528,7 +548,10 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
         handler= function(obj, tv, path, column, ...){
           action <- obj$action
           label <- action$label
-          item <- action$item   
+          item <- action$item 
+          if(identical(data.types, "function"))
+             getToolkitWidget((vb@widget)@filter)$setActive(4)
+             
           if(getToolkitWidget(vb)$getSelection()$countSelectedRows() > 0){
             choice <- svalue(vb)
             get.choice <- safe.eval(choice, envir=.GlobalEnv)
@@ -543,7 +566,7 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
 
      dialog[["vbox"]]$add(getToolkitWidget(vb)$getParent()$getParent()$getParent())
 
-     gSignalConnect(dialog, "response", function(obj, ...){
+     if( dialog$run() == 1){
        if(getToolkitWidget(vb)$getSelection()$countSelectedRows() > 0){     
          choice <- svalue(vb)
          get.choice <- safe.eval(choice, envir=.GlobalEnv)
@@ -551,7 +574,7 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
        }
        options(warn = ow)
        dialog$destroy()       
-     })
+     }
   })
 
   item$setData("button", button)   
@@ -562,7 +585,7 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
     #return(as.call(parse(text=txt))[[1]])  
     return(x$getData("label")$getText())
   })
-  item$setData("set.value", function(x, value) {
+  item$setData("set.value", function(x, value, propagate=TRUE, ...) {
     #x$getData("label")$setText(deparse(substitute(value)))
     label <- x$getData("label")
     if(!length(value)){
@@ -570,7 +593,7 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
     } else {
       label$setText(value)
     }
-    signal(item, "default")
+    if(propagate) signal(item, "default")
   })    
 
   gSignalConnect(label, "activate", function(...) {
@@ -585,8 +608,8 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
 dataframeItem <- function(data.types = .DATA_OBJECTS, ...)
   objectItem(data.types=data.types, ...)
 
-quick_message <- function(message="", win=NULL) {
-  dialog <- gtkDialog("Warning", NULL, "destroy-with-parent", "gtk-ok", 1, show = FALSE)
+quick_message <- function(message="", win=NULL, caption="Warning") {
+  dialog <- gtkDialog(caption, NULL, "destroy-with-parent", "gtk-ok", 1, show = FALSE)
   dialog$setPosition(GtkWindowPosition["center"])                      
   label <- gtkLabel(message)     
   label$setLineWrap(TRUE)
@@ -862,14 +885,14 @@ variableSelectorItem <- function(value, values=integer(0), name="", tooltip="", 
     return(row.names(retval)[retval])
   })
 
-  vbox$setData("set.value", function(vsi, values, initial=TRUE){
+  vbox$setData("set.value", function(vsi, values, initial=TRUE, propagate=TRUE, ...){
 		replace.treeview <- vsi$getData("replace.treeview")
 		#if(length(dim(values)) < 2){
   	replace.treeview(vsi, values, col.items="Select All", initial)
 		#} else if (length(dim(values)) == 2){
 		#}
     vsi$setData("value", values)
-    signal(vsi, "default")
+    if(propagate) signal(vsi, "default")
   })
   
   tvc <- vbox$getData("treeview")$getColumns()
@@ -948,7 +971,7 @@ listItem <- function(value,
 
   hbox0$setData("vbox", vbox)
   hbox0$setData("expand", TRUE)    
-  hbox0$setData("set.value", function(item, values=NULL){
+  hbox0$setData("set.value", function(item, values=NULL, ...){
     if(is.numeric(max.items) && max.items >= 1 && length(values) > max.items) 
       values <- values[1:max.items] 
 	  checkPtrType(item, "GtkBox")
@@ -956,7 +979,6 @@ listItem <- function(value,
 	  replace.treeview <- vbox$getData("replace.treeview")
 	  replace.treeview(item$getData("vbox"), values, col.items=character(0), initial=1)
 	  item$setData("value", values)
-
   }) 
 
   selection <- vbox$getData("treeview")$getSelection()
@@ -974,7 +996,7 @@ listItem <- function(value,
 
 # this function turns a list of markup items into a list that has 
 # one element per markup item
-process.markup <- function(dlg.list){
+process.markup <- function(dlg.list, func=NULL){
   
   if(any(!nchar(names(dlg.list)))) 
     stop(paste("Dialog markup contains unnamed elements at", paste(which(!nchar(names(dlg.list))), collapse=", ")))
@@ -999,9 +1021,17 @@ process.markup <- function(dlg.list){
   
   arg.names <- substr(names(dlg.list), 1, pos.of.items-1)[items.idx]
   if(any(duplicated(arg.names))) stop("Duplicate arguments in function dialog")  
-  
-  for(jj in 1:length(items.idx)){
-    markup <- list()
+#    # Warn for potential mismatches between function and dialog arguments
+#  if(!is.null(func) && is.function(func)){
+#    nff <- names(formals(func))
+#    if(length(nff) && !"..."%in%arg.names && any(!arg.names%in%nff))
+#       cat(paste("Found argument(s) called:", paste(arg.names[!arg.names%in%nff], collapse = ", "), "in function, but not in dialog.\n"))
+#    if(length(arg.names) && !"..."%in%nff && any(!nff%in%arg.names))
+#      cat(paste("Found argument(s) called:", paste(nff[!nff%in%arg.names], collapse = ", "), "in dialog, but not in function.\n"))
+#  }
+#  
+  if(length(items.idx)) for(jj in 1:length(items.idx)){
+    markup <- list()    
     pos <- items.idx[jj] # position in values
     value <- dlg.list[[pos]] # the actual value that the dialog item has
     markup['value'] <- list(value) # to deal with NULL
@@ -1198,7 +1228,7 @@ run.dialog <- function(func,
    stopifnot(is.list(dlg.list))
 #return()    
       # turn the flattened markup list into a list with $main and one item per dialog item
-    dlist <- process.markup(dlg.list)
+    dlist <- process.markup(dlg.list, func)
     input.name <- NULL
       # set hints if varbrowser is set
     if(!is.null(var.browser)){
@@ -1223,16 +1253,22 @@ run.dialog <- function(func,
     if(!is.null(dlist$main$title)) title <- dlist$main$title
     
     close.str <- "gtk-cancel"
-    if(identical(dlist$main$keep.open, TRUE)) close.str <- "gtk-close"
-    dialog <- gtkDialog(title, parent.window,
-      "modal", "gtk-ok", 1, close.str, 0, show = F)
+    if(identical(dlist$main$keep.open, TRUE)) close.str <- "gtk-close"    
+
+    if(identical(dlist$main$ok.button, FALSE)) 
+      dialog <- gtkDialog(title, parent.window, "modal", "gtk-close", 0, show = F)              
+    else 
+      dialog <- gtkDialog(title, parent.window, "modal", "gtk-ok", 1, close.str, 0, show = F)
   
     dialog$setPosition(GtkWindowPosition["center-on-parent"])
     dialog[["vbox"]]$packStart(box, TRUE, TRUE, 0)
     dialog$showAll()
     dialog_button_box <-  dialog$getChildren()[[1]]$getChildren()[[2]]
+    dgc <- dialog$getChildren()[[1]]$getChildren()
+    dialog_button_box <- dgc[[length(dgc)]]
+    
     runMe <- function(){ 
-      dialog_button_box$setSensitive(FALSE)    
+      dialog_button_box$setSensitive(FALSE)      
       the.args <- lapply(dlg.items, get.value)
       names(the.args) <- sapply(dlg.items, get.name)
   
@@ -1243,10 +1279,10 @@ run.dialog <- function(func,
            && !identical(dlist[[names(dlg.items)[jj]]]$as.character, TRUE)){
           the.args[jj] <- list(tryCatch(as.call(parse(text=the.args[[jj]]))[[1]], error = function(e) NULL))        
           if(is.null(dataset.name) && !is.null(the.args[[jj]])){
-            dataset.name <- the.args[[jj]]
+            dataset.name <- deparse(the.args[[jj]])
           }
         }
-      }      
+      }
         # if the "suppress" markup is used, then suppress this value from being passed to the function
       suppress.idx <- which(unlist(sapply(dlist, function(x) !is.null(x$suppress) && identical(x$suppress, TRUE))))
       for(nam in names(suppress.idx)) the.args[[dlist[[nam]]$name]] <- NULL    
@@ -1264,20 +1300,58 @@ run.dialog <- function(func,
       	  } else {
       			output.name <- paste(func.name, dataset.name, sep="_")
       	  }
-      	  output.name <- make.names(output.name)
      	  } else if (output.name.rule == "replace") {
     	    output.name <- dataset.name
   	    } else {
   	      stop("Unknown output.name.rule")
   	    }
+    	  output.name <- gsub(".", "_", make.names(output.name), fixed=T)  	    
 	    }
   	  #the.args <<- the.args
         # Execute the function
       retval <- NULL               
       if(.Platform$OS.type == "windows" && do.long.running || identical(dlist$main$long.running, TRUE)) {
         do.long.running.task(func=func, values=the.args, func.name=func.name, input.name=input.name, output.name=output.name)
-      } else {
-  	    retval <- OK_handler(func=func, values=the.args, func.name=func.name, input.name=input.name, output.name=output.name)
+      } else { 
+      
+        dcan <- NULL
+        if(identical(dlist$main$show.progress, TRUE)){
+          dcan = gtkDialog("Progress", parent.window, "modal", "gtk-cancel", 1, show=F)
+          pb <- gtkProgressBar()
+          dcan[["vbox"]]$packStart(pb, TRUE, FALSE, 10)        
+          dcan$setPosition(GtkWindowPosition["center-on-parent"])
+          dcanbb <- rev(dcan$getChildren()[[1]]$getChildren())[[1]]
+          b = dcanbb$getChildren()[[1]]
+          gSignalConnect(b, "clicked", function(button, data=list(dcan=dcan, dlg=dialog)){
+            data$dcan$destroy()
+            dialog_button_box$setSensitive(TRUE)
+            #dlg$destroy()
+            .C("rgtk2extras_interrupt")
+          })
+            # Pass the p.b. to the function if it's looking for one 
+          pw_contains_bar <- FALSE
+          pw_contains_label <- FALSE        
+          if("progressbar" %in% names(formals(func)) && !"progressbar" %in% names(the.args)) { 
+            pw_contains_bar <- TRUE
+            the.args <- append(the.args, list(progressbar = pb))
+          } 
+          if("progresslabel" %in% names(formals(func)) && !"progresslabel" %in% names(the.args)) { 
+            pw_contains_label <- TRUE
+            pl <- gtkLabelNew()
+            dcan[["vbox"]]$packStart(pl, TRUE, FALSE, 10)                  
+            the.args <- append(the.args, list(progresslabel = pl))
+          }                  
+          if(!pw_contains_bar && !pw_contains_label){
+            pb$setText("Function is running...")
+          }
+          dcan$show()                 
+          while(gtkEventsPending()) gtkMainIteration()        
+        }
+
+   	    retval <- OK_handler(func=func, values=the.args, func.name=func.name, input.name=input.name, output.name=output.name, cancel.dialog=dcan)
+#  	    while(TRUE) Sys.sleep(0.1)
+        if(!is.null(dcan) && !inherits(dcan, "<invalid>")) dcan$destroy()    
+  	    
       }
         # Assign the output. Can do it within hierarchical list or else create a new name.
   		if(!is.null(retval) && auto.assign){
@@ -1301,7 +1375,11 @@ run.dialog <- function(func,
   retval <- NULL
   if(identical(dlist$main$keep.open, TRUE)) {
     while(dialog$run() == 1){
-      retval <- runMe()    
+#      tryCatch({
+        retval <- runMe()    
+#      }, interrupt = function() {
+#        cat("Function interrupted.\n")
+#      })
     }
     dialog$destroy()    
   } else {
@@ -1320,7 +1398,7 @@ run.dialog <- function(func,
 # Try to call the output "Dataset.Function" or "Function.Output"
 # input name is the first dataset name we've got, if any
 default.handler = function(func, values, func.name=NULL, input.name=NULL, output.name=NULL, data=NULL, 
-    confirm.overwrite=F) {
+    confirm.overwrite=F, cancel.dialog=NULL) {
   retval <- NULL
   stopifnot(is.function(func))
   tryCatch({
@@ -1328,12 +1406,13 @@ default.handler = function(func, values, func.name=NULL, input.name=NULL, output
 	},
     interrupt = function(ex)
   {
-    cat("An interrupt was detected.\n");
-    print(ex);
+    cat("Function was interrupted.\n");
+    #print(ex);
   },
   error = function(ex)
   {
     #gmessage(paste("An error occurred in", func.name, "\n\n", as.character(ex)))
+    if(!is.null(cancel.dialog) && !inherits(cancel.dialog, "<invalid>")) cancel.dialog$destroy()
     quick_message(paste("An error occurred in", func.name, "\n\n", as.character(ex)))
   },
   #warning = function(w)
@@ -1342,6 +1421,7 @@ default.handler = function(func, values, func.name=NULL, input.name=NULL, output
   #},
   finally =
   {
+    if(!is.null(cancel.dialog) && !inherits(cancel.dialog, "<invalid>")) cancel.dialog$destroy()
   }) # tryCatch()
   return(retval)
 }
@@ -1349,6 +1429,14 @@ default.handler = function(func, values, func.name=NULL, input.name=NULL, output
 ##
 ##
 # These are some functions for common dialog signaling needs
+
+ # This function should trigger the same result as if the rightmost button were clicked
+run.it <- function(item){
+  while(!inherits(item$getParent(), "GtkWindow")) item <- item$getParent()
+  rev(rev(item$getChildren())[[1]]$getChildren())[[1]]$clicked()
+}
+
+
 # Get names from the item and set them to list
 get.names <- function(item, b, user.data=NULL) {
   #obj <- get(get.value(item))
@@ -1356,20 +1444,25 @@ get.names <- function(item, b, user.data=NULL) {
   set.value(b, names(obj))
 }
 
+# user.data (list(extra.names = "row.names")) puts row.names at the start
 get.colnames <- function(item, ..., user.data=NULL) {
   #obj <- get(get.value(item))
   if(object.exists(get.value(item))){
     obj <- safe.eval(get.value(item))
-    if(is.null(colnames(obj))) colnames(obj) <- 1:dim(obj)[2]
-    sapply(list(...), function(x) set.value(x, colnames(obj)))
+    cn <- colnames(obj)
+    if(is.null(cn)) cn <- 1:dim(obj)[2]
+    if(!is.null(user.data$extra.names)) cn <- c(user.data$extra.names, cn)
+    sapply(list(...), function(x) set.value(x, cn))
   }
 }
 
-get.rownames <- function(item, b, user.data=NULL) {
+get.rownames <- function(item, ..., user.data=NULL) {
   #obj <- get(get.value(item))
   obj <- safe.eval(get.value(item))  
-  if(is.null(rownames(obj))) rownames(obj) <- 1:dim(obj)[2]
-  set.value(b, rownames(obj))
+  rn <- colnames(obj)
+  if(is.null(rn)) rn <- 1:dim(obj)[1]  
+  if(!is.null(user.data$extra.names)) rn <- c(user.data$extra.names, rn)  
+  sapply(list(...), function(x) set.value(x, rn))
 }
 
 # Get the data object name from b and the column from item and report 

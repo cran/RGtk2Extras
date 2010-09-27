@@ -1,4 +1,4 @@
-do.long.running.task <- function(func, values, func.name, input.name, output.name){
+do.long.running.task <- function(func, values, func.name = deparse(substitute(func)), input.name=NULL, output.name = "output"){
   tf1 <- "process_pid.txt"
   unlink(tf1)
   infile.text <- paste(
@@ -10,7 +10,8 @@ do.long.running.task <- function(func, values, func.name, input.name, output.nam
   'save(retval, file="outfile.Rdata")', sep="\n")
 
     # remove the output file
-  unlink("outfile.Rdata")
+  outfilename = "outfile.Rdata"
+  unlink(outfilename)
   unlink("input.Rdata")
   the.formals <- formals(func)
   the.names <- as.character(unlist(the.formals[sapply(the.formals, class)=="name"]))
@@ -21,7 +22,6 @@ do.long.running.task <- function(func, values, func.name, input.name, output.nam
   cat(infile.text, file="infile.R")
     #
   check_for_file <- function(data){
-  
     outfilename <- data$outfilename
     pb <- data$pb
     tf1 <- data$tf1
@@ -41,24 +41,26 @@ do.long.running.task <- function(func, values, func.name, input.name, output.nam
         dlg$destroy()
       })
     }
-    
+
+    rv <- TRUE
     if(file.exists(outfilename)){
-      load(outfilename)
-      dialog$destroy()
-      unlink(outfilename)
-      
-      retval <- get("retval", envir=.GlobalEnv)
-      if("error"%in%class((retval))){
-        quick_message(paste("An error occurred in", func.name, "\n\n", as.character(retval)))
-      } else if(!is.null(retval) && !is.null(output.name)){
- 	  assign.string = paste(".GlobalEnv$", output.name, " <- ", "retval", sep="")
-  	  eval(parse(text=assign.string))
-      }
-      return(FALSE)
-    } else {
-      #print("Doesn't exist"); flush.console()
-      return(TRUE)
+      tryCatch({
+        load(outfilename)  # Error reported in reading connection here
+        dialog$destroy()
+        unlink(outfilename)      
+        retval <- get("retval")
+        if("error"%in%class((retval))){
+          quick_message(paste("An error occurred in", func.name, "\n\n", as.character(retval)))
+        } else if(!is.null(retval) && !is.null(output.name)){
+   	      assign.string = paste(".GlobalEnv$", output.name, " <- ", "retval", sep="")
+    	    eval(parse(text=assign.string))
+        }
+        rv <- FALSE
+      }, error = function(e) {
+         cat(paste("Trying to open output:", e$message, "... Continuing...\n"))
+      })
     }
+    return(rv)    
   }
 
   system("R CMD BATCH infile.R outfile.R", wait=F)
@@ -67,11 +69,12 @@ do.long.running.task <- function(func, values, func.name, input.name, output.nam
                       show = FALSE)
   pb = gtkProgressBar()
   dialog[["vbox"]]$packStart(pb, TRUE, FALSE, 10)
+  dialog$setPosition(GtkWindowPosition["center"])
   dialog$setResizable(FALSE)
   dialog$setResponseSensitive(1, FALSE)
   
   timeout.id <- gTimeoutAdd(1000, check_for_file,
-    data=list(outfilename="outfile.Rdata", pb=pb, dialog=dialog, tf1=tf1))
+    data=list(outfilename=outfilename, pb=pb, dialog=dialog, tf1=tf1))
 
   dialog$showAll()
 

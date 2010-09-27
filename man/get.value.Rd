@@ -12,5 +12,6 @@ get.value(dlg.item, ...)
 \item{...}{args}
 }
 \details{
+This function can be called on dialogItems to get the value they are set to.
 }
 \keyword{interface}
