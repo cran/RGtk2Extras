@@ -1,4 +1,4 @@
-# Written by Tom Taverner <Thomas.Taverner@pnl.gov>
+# Written by Tom Taverner <t.taverner@gmail.com>
 # for the U.S. Department of Energy (PNNL, Richland, WA, USA)
 # Website: http://omics.pnl.gov/software
 #
@@ -28,14 +28,44 @@
 
 # Changed eval(parse to "safe.eval" to avoid malicious insertions of code
 
+if(.Platform$OS.type == "windows") {
+  PLATFORM_OS_TYPE <- "windows"
+} else if (.Platform$OS.type == "unix"){
+  if (Sys.info()["sysname"] == "Darwin")
+    PLATFORM_OS_TYPE <- "mac"
+  else{ 
+    PLATFORM_OS_TYPE <- "unix"    }
+}
+
 library(RGtk2)
-library(gWidgetsRGtk2)
+#library(gWidgetsRGtk2)
+
+my.gvarbrowser <- function(...){
+    if(require(gWidgetsRGtk2))
+       return(gvarbrowser(...))
+    warning("gWidgetsRGtk2 not installed")
+}
+
+my.getToolkitWidget <- function(...){
+    if(require(gWidgetsRGtk2))
+       return(getToolkitWidget(...))
+    warning("gWidgetsRGtk2 not installed")
+}
+
+my.svalue <- function(...){
+    if(require(gWidgetsRGtk2))
+       return(svalue(...))
+    warning("gWidgetsRGtk2 not installed")
+}
 
 my.getwd <- function() gsub("(.*)/$", "\\1", getwd()) # for "C:/" we want to remove the end "/"
 
 .ITEMS = c("choiceItem", "rangeItem", "fileItem", "integerItem", "radiobuttonItem", "objectItem",
       "numericItem", "stringItem", "trueFalseItem", "variableSelectorItem", "listItem", "dataframeItem", "variableStringItem", "buttonItem")
 .DATA_OBJECTS <- c("data.frame", "matrix")
+
+
+# we use our own version of gfile, my.gfile
 
 # Utility function for choosing file with filters in platform independent way
 my_choose_files <- function(fn ="*.*", multi=FALSE, filters=NULL, type = "open", caption=NULL){
@@ -49,7 +79,7 @@ my_choose_files <- function(fn ="*.*", multi=FALSE, filters=NULL, type = "open",
       f <- choose.files(fn, multi = multi, filters=filters, caption=caption)
     }
   } else {
-      f <- gfile(fn, multi = multi, type = type)
+      f <- my.gfile(fn, multi = multi, type = type)
   }
   return(f)
 }    
@@ -477,7 +507,7 @@ fileItem <- function(value, name="", multi = FALSE, filters=NULL, extension = "*
        else
          f <- choose.files(fn, multi = multi, filters=filters)
      } else {
-       f <- gfile(fn, multi = multi, type = type)
+       f <- my.gfile(fn, multi = multi, type = type)
      }
      if(!is.na(f) && length(f) > 0 && nchar(f) > 0){
         set.value(item, f)
@@ -542,18 +572,19 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
     dialog$setTransientFor(parent.window)          
     dialog$showAll()
 
-    library(gWidgetsRGtk2)
+    # library(gWidgetsRGtk2)
     tryCatch({   # this warns about missing .tags on windows
-      vb <- gvarbrowser(action = list(item=item, label=label), 
+print("Got here")
+      vb <- my.gvarbrowser(action = list(item=item, label=label), 
         handler= function(obj, tv, path, column, ...){
           action <- obj$action
           label <- action$label
           item <- action$item 
           if(identical(data.types, "function"))
-             getToolkitWidget((vb@widget)@filter)$setActive(4)
+             my.getToolkitWidget((vb@widget)@filter)$setActive(4)
              
-          if(getToolkitWidget(vb)$getSelection()$countSelectedRows() > 0){
-            choice <- svalue(vb)
+          if(my.getToolkitWidget(vb)$getSelection()$countSelectedRows() > 0){
+            choice <- my.svalue(vb)
             get.choice <- safe.eval(choice, envir=.GlobalEnv)
             if(is.null(data.types) || class(get.choice)%in%data.types){          
               set.value(item, choice)
@@ -564,11 +595,11 @@ objectItem <- function(value=NULL, name="", tooltip="", data.types=NULL, parent.
         })
      }, error= function(e) {}, warning= function(w) print(w))
 
-     dialog[["vbox"]]$add(getToolkitWidget(vb)$getParent()$getParent()$getParent())
+     dialog[["vbox"]]$add(my.getToolkitWidget(vb)$getParent()$getParent()$getParent())
 
      if( dialog$run() == 1){
-       if(getToolkitWidget(vb)$getSelection()$countSelectedRows() > 0){     
-         choice <- svalue(vb)
+       if(my.getToolkitWidget(vb)$getSelection()$countSelectedRows() > 0){     
+         choice <- my.svalue(vb)
          get.choice <- safe.eval(choice, envir=.GlobalEnv)
          if(is.null(data.types) || class(get.choice)%in%data.types) set.value(item, choice)
        }
@@ -636,30 +667,20 @@ create.model <- function(row.items, col.items, initial=TRUE){
 }
 
 item.toggled <- function(cell, path.str, data){
-  treeview <- data
+  treeview <- data$treeview
+  vbox <- data$vbox
   checkPtrType(treeview, "GtkTreeView")
   model <- gtkTreeViewGetModel(treeview)
-  theFrame <- as.data.frame(model)
+#  theFrame <- as.data.frame(model)
   
   path <- gtkTreePathNewFromString(path.str)
   column <- cell$getData("column")
-  theFrame[as.numeric(path$toString())+1, column+1] <- !theFrame[as.numeric(path$toString())+1, column+1]
-  treeview$setModel(rGtkDataFrame(theFrame))
-  
-  
+#  theFrame[as.numeric(path$toString())+1, column+1] <- !theFrame[as.numeric(path$toString())+1, column+1]
+#  treeview$setModel(rGtkDataFrame(theFrame))
+  i <- as.numeric(path$toString())+1
+  j <- column + 1
+  model[i, j] <- !model[i, j]
   return()
-  # get toggled iter
-  iter <- model$getIter(path)$iter
-  toggle.item <- model$get(iter, column)[[1]]
-
-  # do something with the value
-  toggle.item <- !toggle.item
-  
-  # set new value
-  model$set(iter, column, toggle.item)
-  if(treeview$getData("xor") && toggle.item)
-    for(jj in setdiff(1:(length(treeview$getColumns())-1), column))
-      model$set(iter, jj, !toggle.item)
 }
 
  add.item <- function(treeview, item) {
@@ -708,7 +729,7 @@ column.clicked <- function(column, data){
   return(FALSE)
 }
 
-add.columns <- function(treeview, col.items, initial=integer(0)) {
+add.columns <- function(treeview, col.items, initial=integer(0), vbox) {
 
   # column for holiday names
   renderer <- gtkCellRendererTextNew()
@@ -730,7 +751,7 @@ add.columns <- function(treeview, col.items, initial=integer(0)) {
 		renderer <- gtkCellRendererToggleNew()		
 		renderer$set(xalign = 0.0)
 		renderer$setData("column", jj)                           
-		gSignalConnect(renderer, "toggled", item.toggled, treeview)
+		gSignalConnect(renderer, "toggled", item.toggled, data=list(treeview=treeview, vbox=vbox))
 		col.offset <- treeview$insertColumnWithAttributes(-1, col.items[jj], renderer,
 									  active = jj)
 		column <- treeview$getColumn(col.offset - 1)
@@ -805,11 +826,13 @@ choice.grid <- function(row.items, col.items=character(0), initial=integer(0), x
   	vbox$packStart(sw, TRUE, TRUE, 0)	
     vbox$setData("sw", sw)
   	
+  	 ## this returns an RGtkDataF
   	model <- create.model(row.items, col.items, initial)
   	treeview <- gtkTreeViewNewWithModel(model)
   	treeview$setRulesHint(TRUE)
   	treeview$setHeadersVisible(headers.visible)
     treeview$getSelection()$setMode(GtkSelectionMode[select.mode])
+    vbox$setData("model", model)  	        
     sw$setData("treeview", treeview)  	    
   
 #    selectedColor <- as.GdkColor(c(49, 106, 197)*256) # Linux
@@ -823,7 +846,7 @@ choice.grid <- function(row.items, col.items=character(0), initial=integer(0), x
     treeview$setData("dimnames", list(rows=row.items, columns=col.items))
     treeview$setData("GetItems", GetItems)  
     
-  	add.columns(treeview, col.items, initial)		
+  	add.columns(treeview, col.items, initial, vbox)		
   
   	sw$add(treeview)
     gSignalConnect(treeview$getSelection(), "changed", 
@@ -997,7 +1020,7 @@ listItem <- function(value,
 # this function turns a list of markup items into a list that has 
 # one element per markup item
 process.markup <- function(dlg.list, func=NULL){
-  
+                                                                                   
   if(any(!nchar(names(dlg.list)))) 
     stop(paste("Dialog markup contains unnamed elements at", paste(which(!nchar(names(dlg.list))), collapse=", ")))
 
@@ -1150,9 +1173,10 @@ create.panel <- function(a, dlg.items){
 
   if(!is.null(a$main$label)) 
     vbox.main$packStart(gtkLabelNew(a$main$label), FALSE, FALSE, 5)
+
   hbox0 <- gtkHBoxNew() # hbox0 is where we pack our vboxes
   curr.vbox <- gtkVBoxNew()
-  tooltips <- gtkTooltipsNew()
+  #tooltips <- gtkTooltipsNew()
 
 
   # Assign items
@@ -1171,9 +1195,10 @@ create.panel <- function(a, dlg.items){
     nam <- markup$name
     lab.str <- nam
     if(!is.null(markup$label)) lab.str <- markup$label
+
     
     if(!is.null(markup$tooltip) && nchar(markup$tooltip)) 
-      tooltips$setTip(dlg.item, markup$tooltip) 
+      dlg.item$setTooltipText(markup$tooltip) 
         
     expand <- !is.null(dlg.item$getData("expand"))
     bin <- myFrame(dlg.item, lab.str)  
@@ -1212,10 +1237,13 @@ run.dialog <- function(func,
    output.name = NULL,
    do.logging = TRUE,
    log.handler = NULL,
+   user.args = NULL, # the user can specify which args to use
    ...)
 {  
 
    func.name <- NULL
+   if(missing(func)) # return NULL if no function
+     func <- function(...) {}
    if(is.character(func)) {
      func.name <- func   
      func <- get(func, envir=envir)
@@ -1229,18 +1257,48 @@ run.dialog <- function(func,
 #return()    
       # turn the flattened markup list into a list with $main and one item per dialog item
     dlist <- process.markup(dlg.list, func)
-    input.name <- NULL
-      # set hints if varbrowser is set
-    if(!is.null(var.browser)){
-      item.hint <- names(which(sapply(dlist, function(x) 
-         !is.null(x$dlg.item.name) && x$dlg.item.name%in%c("dataframeItem", "objectItem"))))
-      nsr <- getToolkitWidget(var.browser)$getSelection()$countSelectedRows()
-      if(nsr > 0 && length(item.hint) > 0) {
-        vb.choice <- svalue(var.browser)
-        if(!identical(dlist[[item.hint[1]]]$take.hint, FALSE)) # take.hint markup cancels this
-          dlist[[item.hint[1]]]$value <- vb.choice
-      }}
+    if(!missing(user.args)){
+#      uas <- substitute(user.args)
+        # turn any symbols into their deparsed characters, for objectItems
+#      for(ii in 2:length(uas)) if(is.symbol(uas[[ii]])) uas[[ii]] <- deparse(uas[[ii]])
+#      symbol2names.user.args <- uas
+         # Make sure that you pass a string to this for objectItems, not a symbol
+      for(ii in seq(length=length(dlist))){
+        item <- dlist[[ii]] 
+        if(isTRUE(item$name%in%names(user.args))){
+          user.value <- user.args[[item$name]]
+          if(item$dlg.item.name%in%c("radiobuttonItem", "choiceItem")){ # named value arg
+            value.names <- names(item$value)
+            if(any("value"%in%value.names)) names(value.names)["value"%in%value.names] <- ""
+            if(any(item$value%in%user.value)) names(dlist[[ii]]$value)[which(item$value%in%user.value)] <- "value"
+          } else if (item$dlg.item.name%in%"integerItem"){
+            dlist[[ii]]$value["value"] <- user.value
+          } else if (item$dlg.item.name%in%c("dataframeItem", "objectItem")){
+            dlist[[ii]]$value <- user.value
+          } else {
+            dlist[[ii]]$value <- user.value
+          }
+        }
+      }
+    }
+    #print(dlist)
       
+    input.name <- NULL
+    tryCatch({
+		  # set hints if varbrowser is set
+		if(!is.null(var.browser)){
+		  item.hint <- names(which(sapply(dlist, function(x) 
+		     !is.null(x$dlg.item.name) && x$dlg.item.name%in%c("dataframeItem", "objectItem"))))
+		  nsr <- my.getToolkitWidget(var.browser)$getSelection()$countSelectedRows()
+		  if(nsr > 0 && length(item.hint) > 0) {
+		    vb.choice <- my.svalue(var.browser)
+		    if(!identical(dlist[[item.hint[1]]]$take.hint, FALSE)) # take.hint markup cancels this
+		      dlist[[item.hint[1]]]$value <- vb.choice
+		  }}
+    }, error = function(e){
+      print("Can't find var browser to set")
+      print(e)
+     })      
       # create the list of dialog items
     dlg.items <- create.dialog.items(dlist)
       
@@ -1253,7 +1311,7 @@ run.dialog <- function(func,
     if(!is.null(dlist$main$title)) title <- dlist$main$title
     
     close.str <- "gtk-cancel"
-    if(identical(dlist$main$keep.open, TRUE)) close.str <- "gtk-close"    
+    if(identical(PLATFORM_OS_TYPE, "windows") && identical(dlist$main$keep.open, TRUE)) close.str <- "gtk-close"    
 
     if(identical(dlist$main$ok.button, FALSE)) 
       dialog <- gtkDialog(title, parent.window, "modal", "gtk-close", 0, show = F)              
@@ -1335,6 +1393,7 @@ run.dialog <- function(func,
             pw_contains_bar <- TRUE
             the.args <- append(the.args, list(progressbar = pb))
           } 
+
           if("progresslabel" %in% names(formals(func)) && !"progresslabel" %in% names(the.args)) { 
             pw_contains_label <- TRUE
             pl <- gtkLabelNew()
@@ -1355,10 +1414,12 @@ run.dialog <- function(func,
       }
         # Assign the output. Can do it within hierarchical list or else create a new name.
   		if(!is.null(retval) && auto.assign){
-        assign(output.name, retval, envir=.GlobalEnv)
+        assign(output.name[1], retval, envir=.GlobalEnv)
       }
       # Log the action to a file
     if(!do.long.running && do.logging && !is.null(log.handler) && is.function(log.handler)){
+      the.args$progresslabel <- NULL
+      the.args$progressbar <- NULL
       sub.values <- as.character(substitute(the.args))
       cidx <- sapply(the.args, function(x) is.character(x) && length(x) == 1)
       sub.values[cidx] <- sapply(as.character(the.args[cidx]), deparse)
@@ -1373,7 +1434,8 @@ run.dialog <- function(func,
   } # end runMe
   
   retval <- NULL
-  if(identical(dlist$main$keep.open, TRUE)) {
+  if(identical(PLATFORM_OS_TYPE, "windows") && 
+     identical(dlist$main$keep.open, TRUE)) {
     while(dialog$run() == 1){
 #      tryCatch({
         retval <- runMe()    

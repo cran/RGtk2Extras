@@ -1,13 +1,13 @@
-\name{dfedit}
-\alias{dfedit}
-\title{Convenience function for editing a data frame in its own window}
-\usage{dfedit(items, 
+\name{dfview}
+\alias{dfview}
+\title{Convenience function for viewing a data frame in its own window}
+\usage{dfview(items, 
 dataset.name = deparse(substitute(items)), 
 size=c(600, 300), col.width=64, 
-editable=TRUE,   
-autosize = is.null(dim(items))||ncol(items)<25,
-update=TRUE, modal=TRUE)}
-\description{Convenience function for editing a data frame in a window.}
+editable=FALSE, 
+autosize = is.null(dim(items)) || ncol(items) < 25,
+update=FALSE)}
+\description{Convenience function for viewing a data frame in a window.}
 \details{IF set to NULL, is the name of the dataset.}
 \value{Returns the edited data frame after running modally}
 \arguments{\item{items}{The data frame to edit}
@@ -16,7 +16,6 @@ update=TRUE, modal=TRUE)}
 \item{col.width}{Optional column size}
 \item{editable}{Allow user editing of the frame}
 \item{autosize}{Columns automatically size to fit headers}
-\item{update}{Update the frame on the fly with editing}
-\item{modal}{TRUE for the editor to halt R and return an object}
+\item{update}{Update the data frame on the fly}
 }        
 

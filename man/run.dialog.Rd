@@ -8,7 +8,10 @@
 run.dialog(func, 
    pos = -1,
    envir = as.environment(pos),
-   dlg.list = tryCatch(get(paste(func.name, "dialog", sep="."), envir=envir), error =function(e) NULL),   
+   dlg.list = tryCatch(
+   get(paste(func.name, "dialog", sep="."), 
+   envir=envir), 
+   error =function(e) NULL),   
    var.browser=NULL,
    parent.window=NULL, 
    auto.assign=TRUE, 
@@ -18,6 +21,7 @@ run.dialog(func,
    output.name = NULL,
    do.logging = TRUE,
    log.handler = NULL,
+   user.args = NULL,
    ...)
 }
 \arguments{
@@ -36,6 +40,7 @@ run.dialog(func,
     auto.assign and output.name.rule}
   \item{do.logging}{Send the deparsed function call to an external function?}
   \item{log.handler}{Function to take the deparsed function call}
+  \item{user.args}{Optional values to pass to the dialog which overrule those in dialog}  
   \item{\dots}{Additional arguments}
 }
 \details{
@@ -61,7 +66,8 @@ run.dialog(func,
   The dialog will be modal and centered on the gtkWindow parent.window if this 
  is specified. The R main loop will be blocked until the dialog is destroyed.
 
-  Alternatively, \code{run.dialog(MyFunction, dlg.list=MyMarkupList)} will
+  Alternatively, run.dialog(MyFunction, 
+dlg.list=MyMarkupList) will
   explicitly specify the dialog markup list for \code{MyFunction}.
 
   \bold{Return Values}\cr
@@ -98,18 +104,16 @@ The name \code{arg1.dialogItem} in the MyFunction.dialog markup list
  and markup elements affecting individual dialogItems are specified between them and the
  next dialogItem (or in the case of the last item, the end of the list).\cr
  
- dialogItem can be any one of the following:
- 
- \code{integerItem, numericItem, rangeItem, stringItem, trueFalseItem, 
-  choiceItem, radiobuttonItem, objectItem, dataframeItem, fileItem,
-  variableSelectorItem, listItem, buttonItem}
+ dialogItem can be any one of the following: integerItem, numericItem, 
+  rangeItem, stringItem, 
+  trueFalseItem, choiceItem, 
+  radiobuttonItem, objectItem, 
+  dataframeItem, fileItem,
+  variableSelectorItem, listItem, 
+  buttonItem. Each of these Items displays a different commonly used dialog GUI widget which 
+ are listed below.
 
- Each of these Items displays a different commonly used dialog GUI widget which 
- are listed below. \cr
-
- Most widgets are also set into a small rectangular frame which contains a 
- label. By default the label is set to the name of the corresponding function 
- argument, but this can be set using the \code{label} markup.\cr
+ Most widgets are also set into a small rectangular frame which contains a label. By default the label is set to the name of the corresponding function argument, but this can be set using the \code{label} markup.
 
  The widgets are laid out very simply within the dialog GUI, set top to bottom in 
  a column. If the column layout is told to break using the \code{BREAK=TRUE} markup, 
@@ -172,19 +176,16 @@ The name \code{arg1.dialogItem} in the MyFunction.dialog markup list
    \code{arg_name.dialogItem = substitute(expression)}\cr 
    sets the value of the widget to the evaluated expression.\cr
 
- \code{label = "This widget specifies x"} sets the label for the widget frame.\cr
+ \code{label = "This widget specifies x"} sets the label for the widget frame.
 
- \code{tooltip = "the tooltip string"} sets a tooltip over the dialog item\cr
+ \code{tooltip = "the tooltip string"} sets a tooltip over the dialog item
 
  \code{BREAK = TRUE} stops adding widgets to the end of the column and 
-  starts a new column.\cr
+  starts a new column.
 
  \code{indent= 10} adds a 10 pixel indentation to the left hand side of 
-  the widget frame which can be useful to show hierarchical organization.\cr
-
- \code{signal = c(signal_type, signal_function, 
-   widget1, widget2, ..., user_data=NULL)}\cr
-  specifies a widget signal (see below). More than one signal can be 
+  the widget frame which can be useful to show hierarchical organization. signal = c(signal_type, signal_function, 
+   widget1, widget2, ...,  user_data=NULL) specifies a widget signal (see below). More than one signal can be 
   set for each widget.\cr
 
  \code{signal.at.startup = FALSE} will NOT send the "default" signal from
@@ -318,9 +319,12 @@ Set and Get Calls:\cr
      "default" is emitted when any object is selected.\cr
 
   dataframeItem: identical to objectItem with default data.type markup of 
-    c("data.frame", "matrix"). Also, if a gWidgetsRGtk2 gvarbrowser is 
-    specified in run.dialog(..., var.browser), the FIRST dataframeItem 
-    in the dialog will have its value set to any dataframe or array selected 
+    c("data.frame", "matrix"). Also, if a 
+    gWidgetsRGtk2 gvarbrowser is specified 
+    in run.dialog(..., var.browser), 
+    the FIRST dataframeItem 
+    in the dialog will have its value set to any 
+    dataframe or array selected 
     in the gvarbrowser.\cr
    
    variableSelectorItem: a widget which displays a list with checkboxes to
@@ -378,21 +382,17 @@ Set and Get Calls:\cr
   another widget to insensitive (grayed out), or some items might be moved 
   between list boxes.\cr\cr
 
-  Signaling is specified using the signaling markup, set after a dialog 
-  item:\cr\cr
+  Signaling is specified using the signaling markup, set after a dialog item: signal = c(signal_type, 
+    signal_function, 
+    widget1_arg, widget2_arg, ..., user_data=NULL)
+  containing the following specifications:
 
-  \code{signal = c(signal_type, signal_function, 
-    widget1_arg, widget2_arg, ..., user_data=NULL)}\cr\cr
-  containing the following specifications:\cr
-
-  signal_type is a string, for example "default", "clicked", etc.\cr\cr
+  signal_type is a string, for example "default", "clicked", etc.\cr
    All the dialogItems will broadcast a signal called "default" 
    whenever something happens to them corresponding to a user interaction.\cr 
    This is usually what you're going to want to connect a signal to, but
-   there are exceptions.\cr\cr
-
-  signal_function is a function or a name of a function visible in 
-  the environment run.dialog is called from. It has this signature:\cr\cr
+   there are exceptions.\cr
+  signal_function is a function or a name of a function visible in the environment run.dialog is called from. It has this signature:\cr
     
     signal_function(item, widget1, widget2, ..., user_data=NULL)\cr
       item is the widget that sent the signal;\cr
@@ -402,7 +402,7 @@ Set and Get Calls:\cr
   widget1_arg, widget2_arg, ... are the function argument strings 
    corresponding to the widgets being passed to the signal_function.\cr
 
-  user_data is optional additional data to send to the function.\cr\cr
+  user_data is optional additional data to send to the function.\cr
 
   Within your signal_function, you're going to want to be able to get and 
   set the values your widgets take. \cr

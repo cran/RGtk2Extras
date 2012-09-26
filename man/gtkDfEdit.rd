@@ -14,9 +14,10 @@ gtkDfEdit
 }
 \usage{
 gtkDfEdit(items, dataset.name = deparse(substitute(items)), 
-size.request=c(500, 300), col.width=64, pretty_print=TRUE,
-sprintf_format = "\%.6G",
-dataset.class="data.frame", envir=.GlobalEnv)
+size.request=c(600, 300), col.width=64, 
+dataset.class = "data.frame", editable = TRUE,
+autosize = length(dim(items)) < 2 || ncol(items)<25,
+update=TRUE, envir = .GlobalEnv, ...)
 }
 %- maybe also 'usage' for other objects documented here.
 \arguments{
@@ -32,18 +33,21 @@ The name of the data frame object to modify.
   \item{col.width}{
   The column width.
 }
-  \item{pretty_print}{
-  Apply pretty printing of numeric data.
-}
-  \item{sprintf_format}{
-  Formatting for numeric data.
-}
   \item{dataset.class}{
   Class to coerce data object in global environment to (frame or matrix)
+}
+  \item{editable}{
+  Allow user editing of data in frame.
+}
+\item{autosize}{Columns automatically size to fit headers}
+  \item{update}{
+  Update data frame on the fly with editing.
 }
   \item{envir}{
  Environment to assign data frame into on editing
 }
+  \item{...}{
+Additional args, ignored}
 }
 \details{
 
@@ -71,13 +75,12 @@ The $setColumnName(idx, new.name) method sets the column name at a particular
 index.
 
 
-
 }
 \value{
 A GtkContainer containing the widget.
 }
 \author{
-Tom Taverner <Thomas.Taverner@pnl.gov>, with contributions from John Verzani
+Tom Taverner <t.taverner@gmail.com>, with contributions from John Verzani
 }
 \note{
 The editor consists of row names, column names, the main grid of cells, and 

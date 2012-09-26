@@ -5,7 +5,11 @@
 Platform independent file chooser
 }
 \usage{
-my_choose_files(fn = "*.*", multi=FALSE, filters=NULL, type = "open", caption=NULL)
+my_choose_files(fn = "*.*", 
+multi=FALSE, 
+filters=NULL, 
+type = "open", 
+caption=NULL)
 }
 \arguments{
 \item{fn}{filename}

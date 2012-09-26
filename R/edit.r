@@ -1,4 +1,15 @@
-# Written by Tom Taverner <Thomas.Taverner@pnl.gov>
+# TODO
+
+# 2. Make selection caption work
+# 4. Add menu
+# 5. Autosize window
+# 7. Fix t.to error
+# 8. Remove cursor when not edit mode
+# 9. Doesn't select on factor matches properly
+# 10. Row key press paint update doesn't work
+# 11. Page-down etc doesn't call selection
+
+# Written by Tom Taverner <t.taverner@gmail.com>
 # for the U.S. Department of Energy (PNNL, Richland, WA, USA)
 # Website: http://omics.pnl.gov/software
 #
@@ -14,33 +25,78 @@
 # This notice including this sentence must appear on any copies of this computer
 # software.
 
-#' A package for an editing data frames for RGtk2. Improves on base edit.data.frame function found in utils
+#' A package for an editing data frames for RGtk2. ImIproves on base edit.data.frame function found in utils
 #' @name RGtk2DfEdit-package
 #' @docType package
 
-# Update 8-4-10: Transient modal windows to prevent races while editing 
-# big frames
-# Should be able to specify the environment to update dataframe in
-# Need redo stack
-# Paste now turns NA into ""
+# Bugs:
+# Prints Logical NA as TRUE
+# The cell render function is a kludge
+# Some platforms don't paint column selection, I can't reproduce this
+
+require(RGtk2)
+
+"\\001\\011\\000" # wide dots
+"\\001\\011\\000" # dashes
+
+############################################################
+# Style RC
+############################################################
+
+# don't make the focus line width bigger than the v-separator
+style <- 'style "treeview-style" { 
+GtkTreeView::horizontal-separator = 0
+GtkTreeView::vertical-separator = 0
+GtkTreeView::focus-line-width = 0
+GtkTreeView::focus-line-pattern = "\\000\\000\\000"
+GtkTreeView::grid-line-pattern = "\\000\\000\\000"
+GtkTreeView::grid-line-width = 0
+bg_pixmap[NORMAL]		= "<none>"
+bg_pixmap[INSENSITIVE]	= "<none>"
+bg_pixmap[SELECTED]		= "<none>"
+bg_pixmap[ACTIVE]		= "<none>"
+bg_pixmap[PRELIGHT]		= "<none>" 
+}
+class "GtkTreeView" style "treeview-style" 
+style "paned-style" { 
+GtkPaned::handle-size = 5
+}
+class "GtkPaned" style "paned-style"'
+
+style <- 'style "treeview-style" { 
+GtkTreeView::focus-line-width = 0
+}
+class "GtkTreeView" style "treeview-style" 
+style "paned-style" { 
+GtkPaned::handle-size = 5
+}
+class "GtkPaned" style "paned-style"'
+
+gtkRcParseString(style)
 
 DATA_OBJECTS = c("data.frame", "matrix", "array")
 
-old_warning <- warning
+# 
+#old_warning <- warning
+
+#12345.67 is "12,345.67" in the US, "12 345,67" in France and "12.345,67" 
 
 STACK_LIMIT <- 1E8
 # Don't bother drawing row selection rectangles if there are more than this
 MAX_ROWS_TO_DRAW_SELECTION <- 1000
-VERSION_STRING <- "version 0.5.5"
+VERSION_STRING <- "version 0.6.1"
 
 COLUMN_OFFSET <- 1
+
+# Optionally, we include a blank row at the bottom
+# 0 if it isn't, 1 if it is
+EXTRA_ROW <- 0
 
 ToInternalColIdx <- function(x) x+COLUMN_OFFSET    
 ToExternalColIdx <- function(x) x-COLUMN_OFFSET
 
 # replace these with "" in pretty_print
 
-SPRINTF_FORMAT <-  "%.4G"
 
 if(.Platform$OS.type == "windows") {
   PLATFORM_OS_TYPE <- "windows"
@@ -73,11 +129,12 @@ MergeAdjacent <- function(v, warn=T){
     
       if(length(v)){
         w1 <- which(dv != 1)
-        list(start=c(1, w1+1),
-          end=c(w1, length(v)), 
-          length=1+length(w1))
+        cbind(start=v[c(1, w1+1)],
+          end=v[c(w1, length(v))])
+          #, 
+          #length=1+length(w1))
       } else {
-        list(start=integer(0), end=integer(0), length=0)
+        cbind(start=integer(0), end=integer(0))#, length=0)
       }
     }  
   
@@ -186,7 +243,7 @@ CoerceDataTypes <- function(frame2, theClasses1, to.levels=FALSE){
 ChangeCells <- function(df, nf, row.idx, col.idx, do.coercion=T){ 
   dmm <- dim(df)
   if(!is.data.frame(nf)){
-    nf <- data.frame(nf)
+    nf <- data.frame(nf, check.names=FALSE)
   }                                 
   if(missing(row.idx)) row.idx <- 1:dmm[1] 
   if(missing(col.idx)) col.idx <- 1:dmm[2]
@@ -194,12 +251,13 @@ ChangeCells <- function(df, nf, row.idx, col.idx, do.coercion=T){
 
   oldf = df[row.idx, col.idx, drop=F]
  
-  theClasses <- GetClasses(df) 
+  theClasses <- GetClasses(df)
+  newClasses <- GetClasses(nf)
 
   if(do.coercion){
     nf <- CoerceDataTypes(nf, theClasses[col.idx])
   }
-  
+
   idxf <- which(theClasses == "factor")
   idxf <- idxf[idxf%in%col.idx]
   
@@ -217,11 +275,21 @@ ChangeCells <- function(df, nf, row.idx, col.idx, do.coercion=T){
         df[,jj] <- myDataTypeCoercions("factor", x)
       } else {
         df[row.idx,jj] <- to.model
-      }    
-    } 
+      }
+    }
     cc <- !col.idx%in%idxf 
     df[row.idx, col.idx[cc] ] <- nf[,cc,drop=F]
-  } else {
+  } else { # no factors to change
+    if(!do.coercion){
+        # if we paste into a blank or NA column,
+        # want to make sure the new frame takes attributes
+		for(jj in seq(length=length(newClasses))){
+		   df.jj = col.idx[jj]
+
+		   if (newClasses[jj] != theClasses[df.jj] && all(df[,df.jj] == ""))
+		       class(df[,df.jj]) <- newClasses[jj]
+		}
+    }
     df[row.idx, col.idx] <- nf
   }
 
@@ -257,6 +325,7 @@ SetFactorAttributes <- function(df, col.idx, info){
   df[[idx]] <- theCol
 
   return(list(df = df,  
+
     undo = list( 
       func = "SetFactorAttributes", 
       args = list(col.idx=idx, info=old) 
@@ -269,7 +338,6 @@ CoerceColumns <- function(df, theClasses, col.idx, to.levels=FALSE){
   idx <- col.idx
   if(length(theClasses) == 1 && length(idx) > 1) 
     theClasses <- rep(theClasses, length(idx))
-
   stopifnot(length(idx) == length(theClasses)) 
   stopifnot(max(idx) <= ncol(df))
 
@@ -317,32 +385,23 @@ ChangeRowNames <- function(df, theNames, row.idx){
   )) 
 } 
 
-# Makes indexes  
+# Makes indexes 
 InsertIndex <- function(orig, insertions){ 
-  all.idx <- 1:orig 
-  li <- 1:length(insertions) 
+  all.idx <- seq(length=orig)
+  li <- seq(length=length(insertions)) 
   del.idx <- insertions + li - 1 
   ins.idx <- orig + li 
-  for(jj in li) 
-    all.idx <- append(all.idx, ins.idx[jj], after=del.idx[jj]-1) 
+  for(jj in li){ 
+    after.idx = max(del.idx[jj]-1, 0)
+    all.idx <- append(all.idx, ins.idx[jj], after=after.idx)
+  }
   return(all.idx) 
 } 
 # deleting indexed rows and columns 
 DeleteRows <- function(df, row.idx){
-  idx <- row.idx
-  
+  idx <- row.idx   
   new_df <- df[-idx,,drop=F]
-
-    # New code: set this flag to TRUE if the row names are 1:dim(df)[1]
-    # and remember that the last rowname is actually " ", so omit it
-  row_names_null_flag <- identical(rev(rownames(df))[-1], as.character((dim(df)[1]-1):1))
-    # insert the new frame into the old frame at the insertion position
-  if(row_names_null_flag && dim(new_df)[1]>1){
-    #cat("row names are null\n")
-    change.idx <- 1:(dim(new_df)[1]-1)
-    rownames(new_df)[change.idx] <- new_df[change.idx,1] <- as.character(change.idx)
-  }
-        
+  new_df = maintain_null_rownames(df, new_df)
   list(df = new_df,
     undo = list( 
       func = "InsertRows", 
@@ -354,36 +413,43 @@ DeleteRows <- function(df, row.idx){
 InsertRows <- function(df, nf, row.idx){
   idx <- row.idx
   ddf <- dim(df)
-#  print("InsertRows")
-#  print(dim(df))
-#  print(dim(nf))
-#  print(row.idx)
+
   stopifnot(ddf[2] == dim(nf)[2] && dim(nf)[1] == length(idx))
-  colnames(nf) <- colnames(df)
-  xx <- InsertIndex(ddf[1], idx)
+
+  rv <- InsertNARows(df, row.idx)
+  new_df <- rv$df
   nf <- CoerceDataTypes(nf, GetClasses(df))  
-  new_df <- rbind(df, nf)[xx,,drop=F]
-  
-  row_names_null_flag <- identical(rev(rownames(df))[-1], as.character((dim(df)[1]-1):1))
-  if(row_names_null_flag && dim(df)[1]>1){
-    change.idx <- 1:(dim(new_df)[1]-1)
-    rownames(new_df)[change.idx] <- new_df[change.idx,1] <- as.character(change.idx)
-  }    
-  new_df[,1] <- rownames(new_df)   
-  
-  list(df=new_df,  
-    undo = list( 
-      func = "DeleteRows", 
-      args = list(
-        row.idx=idx+1:length(idx)-1)))
+  new_df[row.idx,] <- nf
+  new_df = maintain_null_rownames(df, new_df)
+  rv$df <- new_df
+  return(rv)
 }
 
+RowNamesAreNull = function(df)
+  identical(rownames(df), as.character(1:dim(df)[1]))
+
+maintain_null_rownames = function(df, new_df){
+    # set this flag to TRUE if the row names are 1:dim(df)[1]
+    # and remember that the last rowname is actually " ", so omit it
+  if(EXTRA_ROW) { 
+    row_names_null_flag <- identical(rev(rownames(df))[-1], as.character((dim(df)[1]-1):1))
+  }  else {
+    row_names_null_flag <- RowNamesAreNull(df)
+  }
+    # insert the new frame into the old frame at the insertion position
+  if(row_names_null_flag && dim(df)[1]>0){
+    #cat("row names are null\n")
+    rownames(new_df) <- new_df[,1] <- seq(length=nrow(new_df))
+  }
+  return(new_df)
+}
+    
 InsertNARows <- function(df, row.idx){
   idx <- row.idx
   ddf <- dim(df)
   xx <- InsertIndex(ddf[1], idx)  
   lidx <- length(idx)
-    
+
   nf <- data.frame(rbind(rep(NA, ddf[2])))[rep(1, lidx),]
   colnames(nf) <- colnames(df)
   rownames(nf) <- make.unique(c(rownames(df), idx+1:lidx-1))[ddf[1]+1:lidx]
@@ -392,17 +458,8 @@ InsertNARows <- function(df, row.idx){
   nf <- CoerceDataTypes(nf, GetClasses(df))
   
   new_df = rbind(df, nf)[xx,,drop=F]
+  new_df = maintain_null_rownames(df, new_df)
 
-    # New code: set this flag to TRUE if the row names are 1:dim(df)[1]
-    # and remember that the last rowname is actually " ", so omit it
-  row_names_null_flag <- identical(rev(rownames(df))[-1], as.character((dim(df)[1]-1):1))
-    # insert the new frame into the old frame at the insertion position
-  if(row_names_null_flag && dim(df)[1]>1){
-    #cat("row names are null\n")
-    change.idx <- 1:(dim(new_df)[1]-1)
-    rownames(new_df)[change.idx] <- new_df[change.idx,1] <- as.character(change.idx)
-  }
-    
   list(df = new_df,  
     undo = list( 
       func = "DeleteRows", 
@@ -410,10 +467,28 @@ InsertNARows <- function(df, row.idx){
         row.idx=idx+1:length(idx)-1)))
 }
 
+# Check if we have null type column names
+ColNamesAreNull = function(df)
+identical(
+    colnames(df)[seq(from=2, length.out=(ncol(df)-2))], 
+    DEFAULT_COLNAMES[seq(from=1, length.out=(ncol(df)-2))]
+  )
+
+# if the old df (df) has default colnames, make sure the new_df does too
+maintain_null_colnames = function(df, new_df){
+  stopifnot(ncol(df)>=2)
+  col_names_null_flag <- ColNamesAreNull(df)
+  if(col_names_null_flag && ncol(new_df) > 2)
+    colnames(new_df) <- c("rows", DEFAULT_COLNAMES[seq(from=1, length.out=(ncol(new_df)-2))], "")
+  return(new_df)
+}
 
 DeleteColumns <- function(df, col.idx) {
   idx <- col.idx
-  list(df = df[,-idx,drop=F],  
+  new_df <- df[,-idx,drop=F]
+  new_df = maintain_null_colnames(df, new_df)
+
+  list(df = new_df,  
     undo = list( 
       func = "InsertColumns", 
       args = list(
@@ -424,13 +499,14 @@ DeleteColumns <- function(df, col.idx) {
 InsertColumns <- function(df, nf, col.idx){
   idx <- col.idx
   ddf <- dim(df)
-#  print("InsertColumns")
-#  print(ddf)
-#  print(dim(nf))
-#  print(length(idx))
+
   stopifnot(ddf[1] == dim(nf)[1] && dim(nf)[2] == length(idx))
   xx <- InsertIndex(ddf[2], idx) 
-  list(df = cbind(df, nf)[,xx,drop=F],  
+
+  new_df = cbind(df, nf)[,xx,drop=F]
+  new_df = maintain_null_rownames(df, new_df)
+
+  list(df = new_df,  
     undo = list( 
       func = "DeleteColumns", 
       args = list(
@@ -442,10 +518,15 @@ InsertNAColumns <- function(df, col.idx, NA.opt=""){
   ddf <- dim(df)
   xx <- InsertIndex(ddf[2], idx) 
   lidx <- length(idx)
-  nf <- data.frame(X=cbind(rep(NA.opt, ddf[1])),stringsAsFactors=FALSE)[,rep(1, length(idx)),drop=F]
+  nf <- data.frame(X=cbind(rep(NA.opt, ddf[1])),stringsAsFactors=FALSE, check.names=FALSE)[,rep(1, length(idx)),drop=F]
+
   colnames(nf) <- make.unique(c(colnames(df), DEFAULT_COLNAMES[idx+1:lidx-2]))[ddf[2]+1:lidx]
 
-  list(df = cbind(df, nf)[,xx,drop=F],  
+  new_df <- cbind(df, nf)[,xx,drop=F]
+
+  new_df = maintain_null_colnames(df, new_df)
+
+  list(df = new_df,  
     undo = list( 
       func = "DeleteColumns", 
       args = list(
@@ -455,7 +536,6 @@ InsertNAColumns <- function(df, col.idx, NA.opt=""){
 # insert new frame dat
 GetTaskPasteIn <- function(theFrame, dat, insert.row, insert.col, 
   do.rownames = F, do.colnames = F, do.coercion=T){ 
-
   stopifnot(class(dat) == "data.frame")
 
   theRownames <- NULL 
@@ -465,24 +545,28 @@ GetTaskPasteIn <- function(theFrame, dat, insert.row, insert.col,
   if (do.colnames)
     theColnames <- colnames(dat) 
    
-  dd <- dim(dat) 
+  dd <- dim(dat)
   dm <- dim(theFrame)
-  if (is.null(insert.row) ) insert.row <- 1
+  if (is.null(insert.row)) insert.row <- 1
   if (is.null(insert.col)) insert.col <- 1
   ins <- c(insert.row, insert.col)
   
   ins.end <- c(ins[1]+dd[1]-1, ins[2]+dd[2]-1) # end of insertion range  
-
   tasks <- list()
-  
-  if(dm[1] < ins[1]+dd[1]){ # Rows
-    idx <- (dm[1]+1):(ins[1]+dd[1])
-    idx <- rep(dm[1], length(idx))
+
+    # need to expand the frame by adding NA rows/cols
+  if(dm[1] < ins[1]+dd[1]-1){ # Rows
+    #Indexing: 1 means insert so it forms new row 1, so there are N+1 insert
+    # positions with an N row data frame.
+    #idx <- (dm[1]+1):(ins[1]+dd[1])
+    #idx <- rep(dm[1], length(idx))
+    idx <- rep(dm[1]+1, ins[1]+dd[1]-dm[1]-1+EXTRA_ROW)
     tasks[[length(tasks)+1]] <- list(func="InsertNARows", args=list(row.idx=idx)) 
   }
   if(dm[2] < ins[2]+dd[2]){ # Columns
-    idx <- (dm[2]+1):(ins[2]+dd[2])
-    idx <- rep(dm[2], length(idx))
+    #idx <- (dm[2]+1):(ins[2]+dd[2])
+    idx <- rep(dm[2], dd[2]+ins[2]-dm[2])
+    #idx <- rep(dm[2], length(idx))
     tasks[[length(tasks)+1]] <- list(func="InsertNAColumns", args=list(col.idx=idx))
   }
 
@@ -496,10 +580,11 @@ GetTaskPasteIn <- function(theFrame, dat, insert.row, insert.col,
   if(do.colnames && !is.null(theColnames))
     tasks[[length(tasks)+1]] <- list(func="ChangeColumnNames", 
         arg = list(theNames = theColnames, col.idx=col.idx))  
-  
-  tasks[[length(tasks)+1]] <- list(func="ChangeCells", 
-    args=list(nf=dat, row.idx=row.idx, col.idx=col.idx, do.coercion=do.coercion))
-    
+
+  if(nrow(dat) && ncol(dat))
+    tasks[[length(tasks)+1]] <- list(func="ChangeCells", 
+      args=list(nf=dat, row.idx=row.idx, col.idx=col.idx, do.coercion=do.coercion))
+
   return(tasks)
 } 
 
@@ -516,9 +601,11 @@ DoUserCall <- function(call_name, fargs, .local){
     }, error = function(e) warning(e))
   }
 }
-  
+
 # Do a task list
+# returns list with df=new frame, undo = list
 DoTask <- function(.local, df, task, handler=NULL){
+#print("DoTask called")
   w <- TransientWindow("Updating...", .local)
   on.exit(w$destroy())
   
@@ -526,17 +613,17 @@ DoTask <- function(.local, df, task, handler=NULL){
   for(taskItem in task){
     arg <- taskItem$arg
     func.name <- taskItem$func
-    arg$df <- df     
-            
+    arg$df <- df
+
     # This can fail when it's too big
+#print(arg)
     rv <- do.call(taskItem$func, arg) 
-    df <- rv$df 
+    df <- rv$df
     undo[[length(undo)+1]] <- rv$undo
         
     if("col.idx"%in%names(taskItem$arg)) taskItem$arg$col.idx <- ToExternalColIdx(taskItem$arg$col.idx)
     DoUserCall(func.name, taskItem$arg, .local)
     if("col.idx"%in%names(taskItem$arg)) taskItem$arg$col.idx <- ToInternalColIdx(taskItem$arg$col.idx)
-    
   }
   return(list(df=df, undo=undo))
 }
@@ -550,11 +637,18 @@ DoTask <- function(.local, df, task, handler=NULL){
   selectedTextColor <- as.GdkColor("black")
   
   myValidInputKeys <- c(GDK_space:GDK_asciitilde, GDK_Delete, GDK_BackSpace)
+
   myMetaKeys <- c(GDK_Shift_L, GDK_Shift_R, GDK_Control_L, GDK_Control_R)
   myShiftKeys <- c(GDK_Shift_L, GDK_Shift_R)
   myValidNavigationKeys <- c(GDK_Down, GDK_Left, GDK_Up, GDK_Right,
-  GDK_Page_Up, GDK_Page_Down, GDK_Return, GDK_ISO_Left_Tab, GDK_Tab, GDK_Home, GDK_End)
+  GDK_Page_Up, GDK_Page_Down, GDK_Return, GDK_ISO_Left_Tab, GDK_Tab, GDK_Home, GDK_End, GDK_KP_Enter, GDK_KP_Left:GDK_KP_Down)
   myValidKeys <- c(myValidInputKeys, myMetaKeys, myValidNavigationKeys, GDK_Insert)
+
+   # make our own key-letter list
+  myGDKKeys <- sapply(apropos("GDK_"), get)
+  myGDKKeys <- sort(unlist(myGDKKeys[sapply(myGDKKeys, class)=='numeric']))
+
+
   exclude.factor <- NA
 
 #' Convenience function to call data frame editor in its own window
@@ -565,24 +659,104 @@ DoTask <- function(.local, df, task, handler=NULL){
 #' @param col.width (width)
 #' @return An object of class GtkDfEdit for which a few RGtk2-style methods are defined
 #' @export
+# Edit object in place argument
 dfedit <- function(items, dataset.name = deparse(substitute(items)), 
-  size=c(500, 300), col.width = 64, pretty_print=TRUE, sprintf_format="%.6G"){
+  size=c(600, 300), col.width = 64, editable=TRUE, 
+  autosize = is.null(dim(items))||ncol(items)<25,
+update=TRUE, modal=TRUE){
   
+  stopifnot(modal%in%c(TRUE, FALSE))
   if(missing(items)||is.null(items)) {
     items <- data.frame(NULL)
-    dataset.name <- "new.data.frame"
+    #items <- data.frame(matrix("", 1E2, 26), stringsAsFactors=FALSE, check.names=FALSE)
+    dataset.name <- "Untitled"
   }
 
-  obj <- gtkDfEdit(items, dataset.name, size.request=size, col.width = col.width, pretty_print=pretty_print, sprintf_format=sprintf_format)
-  dialog <- gtkDialog(dataset.name, NULL, "modal", "Close", 1,show = FALSE)    
-  dialog$setPosition(GtkWindowPosition["center-on-parent"])
+  obj <- gtkDfEdit(items, dataset.name, size.request=size, col.width = col.width, editable=editable, autosize=autosize, update=update)
+  #dialog <- gtkDialog(dataset.name, NULL, "modal", "Close", 1,show = FALSE)
+  if(identical(editable, TRUE) && identical(modal, TRUE)) dialog <- gtkDialog("Data Frame Editor", NULL, c("destroy-with-parent"), "gtk-ok", 1, "gtk-cancel", 0, show = FALSE)    
+  else dialog <- gtkDialog("Data Frame Viewer", NULL, c("destroy-with-parent"), "gtk-close", 0, show = FALSE)
+   
+  #dialog$setModal(FALSE)
+  #dialog$setPosition(GtkWindowPosition["center-on-parent"])
+
+  infoBox <- gtkHBoxNew()
+  selLabel = gtkLabelNew("")
+  selLabel$setAlignment(0, 0.5)
+  selLabel$setSizeRequest(150, -1)
+  infoBox$packStart(selLabel, padding=2, expand=FALSE)
+
+  .local <- obj$getData(".local")
+
+  dialog[["vbox"]]$packStart(infoBox, padding=2, expand=FALSE)
+
   dialog[["vbox"]]$add(obj)
-    
+  dialog[["vbox"]]$setFocusChild(obj)
+
+  obj$setActionHandler("OnLoad", function(obj, sourc, typ) {
+   .local <- obj$getData(".local")
+   dialog$setTitle(paste(.local$dataset.name, "- dfedit", VERSION_STRING))
+  })
+
+     obj$setActionHandler("Selection", function(obj, selections, ...) {
+      selLabel$setText("")
+      dstr <- ""
+      if(length(selections)==1){
+        sel.col <- c(selections[[1]]$start['col.idx'], selections[[1]]$end['col.idx'])
+        sel.col.let <- DEFAULT_COLNAMES[c(selections[[1]]$start['col.idx'], selections[[1]]$end['col.idx'])]
+        sel.row <- c(selections[[1]]$start['row.idx'], selections[[1]]$end['row.idx'])
+        if(length(sel.row)==2 && length(sel.col)==2){
+          sel.col <- sort(sel.col)
+          sel.row <- sort(sel.row)
+          if(sel.row[1]==sel.row[2] && sel.col[1]==sel.col[2]){
+            range.txt <- paste(sel.col.let[1], sel.row[2], sep="")
+            dstr <- as.character(.local$theFrame[sel.row[1], sel.col[1]+COLUMN_OFFSET])
+          } else {
+            range.txt <- 
+               paste(sel.row[2]-sel.row[1]+1, 
+               " R x ", sel.col[2] - sel.col[1]+1, " C", sep="")
+  #             paste(sel.col.let[1], sel.row[1], 
+  #             ":", sel.col.let[2], sel.row[2], sep="")
+          }
+        }
+      } else if(length(selections)>1){
+        range.txt <- "Multiple ranges"
+      } else {
+        range.txt <- ""
+      }
+      selLabel$setText(range.txt)
+    })
+
+  view <- .local$view
+  #dialog$showAll()
   #win <- gtkWindowNew()  
   #win$setTitle(dataset.name)
-  dialog$run()
-  rv <- invisible(obj$getDataFrame())
-  dialog$destroy()
+  if(modal){
+    dialog$showAll()
+    if (dialog$run() == 1){
+      rv <- invisible(obj$getDataFrame())
+      dialog$destroy()
+      return(invisible(rv))
+    } else {
+	   dialog$destroy()
+	   return(invisible(items))
+    }
+  } else {
+    gSignalConnect(dialog, "response", gtkWidgetDestroy)
+    dialog$showAll()
+    return(invisible(obj))
+  }
+}
+
+
+
+
+dfview <- function(items, dataset.name = deparse(substitute(items)), 
+  size=c(600, 300), col.width = 64, editable=FALSE, 
+  autosize = is.null(dim(items))||ncol(items)<25,
+  update=FALSE){
+  rv <- dfedit(items, dataset.name, 
+  size=size, col.width=col.width, editable=editable, autosize=autosize, update=update)
   invisible(rv)
 }
    
@@ -603,32 +777,66 @@ DoUndo <- function(.local){
   undo <- .local$undoStack[[length(.local$undoStack)]]
   rv <- DoTask(.local, .local$theFrame, rev(undo), .local$changed.handler)
   UpdateDfEditor(.local, rv$df)
+   if(length(.local$undoStack)){
+     #.local$redoStack[[length(.local$redoStack)+1]] <- rev(undo)
+     .local$undoStack[[length(.local$undoStack)]] <- NULL
+   }
+}
+
+DoRedo <- function(.local){
+  if(!length(.local$redoStack)) return(TRUE)
+  redo <- .local$redoStack[[length(.local$redoStack)]]
+  rv <- DoTask(.local, .local$theFrame, redo, .local$changed.handler)
+  UpdateDfEditor(.local, rv$df)
    if(length(.local$undoStack))
      .local$undoStack[[length(.local$undoStack)]] <- NULL
 }
 
-TransientWindow <- function(txt, .local){
-    w <- gtkWindowNew("", show=F); w$setDecorated(FALSE); w$add(gtkLabelNew(txt))
-    w$setPosition(GtkWindowPosition["center-on-parent"])              
-    w$setTransientFor(.local$toplevel); w$setModal(TRUE); w$showAll()
+TransientWindow <- function(txt, .local=NULL){
+    w <- gtkWindowNew("", show=F) #GTK_WINDOW_POPUP
+    gtkWidgetSetCanFocus(w, TRUE)
+    gtkWindowSetSkipTaskbarHint(w, TRUE)
+    gtkWidgetSetSizeRequest(w, 100, 30)
+    gtkWindowSetDecorated(w, FALSE)
+    lt <- gtkLabelNew(txt)
+    gtkAdd(w, lt)
+    gtkWindowSetPosition(w, GtkWindowPosition["center-on-parent"])              
+    gtkWindowSetTransientFor(w, .local$toplevel)    
+    gtkWindowSetModal(w, TRUE)
+    gtkWidgetShowAll(w)
+    #gtkWidgetGrabFocus(w)
     return(w)
 }
 
+
 # restrict means you can't select the last index
-GetSelectedRows <- function(tv, .local, restrict=TRUE){
+GetSelectedRows <- function(tv, .local, ignore.last.row=FALSE){
    # block transient interactions with a popup
 #  w <- TransientWindow("Getting row selection...", .local)  
 #  on.exit(w$destroy())  
   sr <- integer(0)
-  #tryCatch({    
-    rv <- gtkTreeSelectionGetSelectedRows(gtkTreeViewGetSelection(tv))$retval
-    if(length(rv)){
+   #tryCatch({    
+    selection <- gtkTreeViewGetSelection(tv)
+    rv <- gtkTreeSelectionGetSelectedRows(selection)$retval
+    lrv <- length(rv)
+    if(lrv){
+      #sr <- vector("integer", lrv)
+      #for(ii in seq(length=lrv))
+      #  sr[ii] <- gtkTreePathGetIndices(rv[[ii]])
       sr <- sapply(rv, gtkTreePathGetIndices)
-      if(is.numeric(sr)) {
-        sr <- sr + 1
-        if(restrict) sr <- sr[!sr%in%dim(.local$theFrame)[1]]
-      } else {
-        sr <- integer(0)        
+      if(!ignore.last.row){
+        if(is.numeric(sr)) {
+          sr <- sr + 1
+          } else {
+          sr <- integer(0)        
+        }
+      } else { # remove last row
+        if(is.numeric(sr)) {
+          sr <- sr + 1
+          sr <- sr[!sr%in%dim(.local$theFrame)[1]]
+        } else {
+          sr <- integer(0)        
+        }
       }
     }
   #},
@@ -642,13 +850,13 @@ GetSelectedRows <- function(tv, .local, restrict=TRUE){
 # Make a data frame to put into the model.
 # We have an extra row for names and a blank at the end.
 # Also, data frames with all-NAs turn into logical, which displays badly.
-MakeInternalDataFrame <- function(dataset, add.rows=T, add.columns=T, NA_replace = NA_character_){
+MakeInternalDataFrame <- function(dataset, add.rows=EXTRA_ROW, add.columns=T, NA_replace = NA_character_){
   
   if(is.null(dim(dataset))) dataset <- cbind(dataset)
   if(!length(rownames(dataset)) && dim(dataset)[1])
-      rownames(dataset) <- 1:dim(dataset)[1]
+      rownames(dataset) <- seq(length=dim(dataset)[1])
   if(!length(colnames(dataset)) && dim(dataset)[2])
-      colnames(dataset) <- DEFAULT_COLNAMES[1:dim(dataset)[2]]
+      colnames(dataset) <- DEFAULT_COLNAMES[seq(length=dim(dataset)[2])]
       
    # Fix bug with NA row name, 09-15-2010
   row_names_dataset <- row.names(dataset)
@@ -675,7 +883,7 @@ MakeInternalDataFrame <- function(dataset, add.rows=T, add.columns=T, NA_replace
   theClasses <- GetClasses(theFrame)  
   for(jj in which(theClasses == "character")) 
     theFrame[,jj] <- myDataTypeCoercions("character", theFrame[,jj])
-  
+
   if(add.rows){ 
     if (add.columns){
 		  blankRow <- data.frame(rows=" ", rbind(rep(NA, dim(dataset)[2])), " " = "", row.names = " ", stringsAsFactors=F)
@@ -691,32 +899,42 @@ MakeInternalDataFrame <- function(dataset, add.rows=T, add.columns=T, NA_replace
 		names(blankRow) <- names(theFrame)
 		theFrame <- rbind(theFrame, blankRow)
   }
-  theFrame
+  return(theFrame)
 }
 
 # Make a data frame to extract from the model.
-MakeExternalDataFrame <- function(theFrame, .local){
+MakeExternalDataFrame <- function(theFrame, .local=NULL){
 
-  dataset.class <- .local$dataset.class
-  new.frame <- theFrame[-dim(theFrame)[1],-c(1, dim(theFrame)[2]), drop=F]
-  tryCatch({
-    if(length(dataset.class)==0 || "data.frame"%in%dataset.class){ 
-      class(new.frame) <- dataset.class
-    } else if(length(dataset.class)==1) {
-      new.frame <- as(new.frame, dataset.class)
-    }}, error = function(e) warning(paste("Couldn't create data of class", paste(dataset.class, collapse = ", "))))
+  if(EXTRA_ROW) new.frame <- theFrame[-nrow(theFrame),-c(1, ncol(theFrame)), drop=F]
+  else 
+    new.frame <- theFrame[,-c(1, ncol(theFrame)), drop=F]
 
-    # Copy any other attributes over
-  dataset.attributes <- .local$dataset.attributes
-  copy.attr <- dataset.attributes[!names(dataset.attributes)%in%c('class', 'dim', 'dimnames', 'names', 'row.names')]    
-  if(length(copy.attr)) for(ii in 1:length(copy.attr)) attr(new.frame, names(copy.attr)[ii]) <- copy.attr[[ii]]
+  if(!is.null(.local)){
+	  dataset.class <- .local$dataset.class
+	  tryCatch({
+		if(length(dataset.class)==0 || "data.frame"%in%dataset.class){ 
+		  class(new.frame) <- dataset.class
+		} else if(length(dataset.class)==1) {
+		  new.frame <- as(new.frame, dataset.class)
+		}}, error = function(e) warning(paste("Couldn't create data of class", paste(dataset.class, collapse = ", "))))
+
+		# Copy any other attributes over
+	  dataset.attributes <- .local$dataset.attributes
+	  copy.attr <- dataset.attributes[!names(dataset.attributes)%in%c('class', 'dim', 'dimnames', 'names', 'row.names')]    
+	  if(length(copy.attr)) for(ii in 1:length(copy.attr)) attr(new.frame, names(copy.attr)[ii]) <- copy.attr[[ii]]
+  }
 
   return(new.frame)
 }
 
+# return last usable row path
 MakeLastPath <- function(df){
+  if(!EXTRA_ROW){
+    if(dim(df)[1] == 0) return(gtkTreePathNewFromString("0"))
+  } else { # adding an extra row
     if(dim(df)[1] == 1) return(gtkTreePathNewFromString("0"))
-    return(gtkTreePathNewFromString(as.character(dim(df)[1]-2)))
+  } 
+  return(gtkTreePathNewFromString(as.character(dim(df)[1]-1-EXTRA_ROW)))
 }
 
 quick_entry <- function(msg, handler, data=NULL, win=NULL) {
@@ -765,7 +983,7 @@ quick_query <- function(message, handler, data, win=NULL) {
   dialog$showAll()
 }
 
-quick_message <- function(message, win=NULL) {
+quick_message <- function(message, caption="Warning", win=NULL) {
   dialog <- gtkDialog("Message", NULL, c("modal","destroy-with-parent"), "gtk-ok", 1,
                       show = FALSE)
   label <- gtkLabel(message)     
@@ -780,6 +998,12 @@ quick_message <- function(message, win=NULL) {
 }
     
 #warning <- quick_message
+
+IsCtrl <- function(stat) (as.flag(stat) & GdkModifierType['control-mask'])
+
+IsShift <- function(stat) (as.flag(stat) & GdkModifierType['shift-mask'])
+
+IsCtrlShift <- function(stat) (as.flag(stat) & GdkModifierType['control-mask'] & GdkModifierType['shift-mask'])
 
 CtrlLetter <- function(keyval, stat, let)
   keyval == let && (as.flag(stat) & GdkModifierType['control-mask'])
@@ -824,10 +1048,15 @@ CopyToClipboard <- function(dat, do.rownames=F, do.colnames=F){
         return(FALSE)
       }
       a <- pipe("xclip -selection c", open="w")
+    }
   }
-    write.function(dat2, a)
-    close(a)
-  }
+
+  if(.Platform$OS.type != "windows" ) 
+    tryCatch(
+      write.function(dat2, a),
+      error = stop,
+      finally = close(a)
+    )
 }  
 
 # Where to read from
@@ -851,17 +1080,549 @@ CloseClipboardPipe <- function(p)
   if (PLATFORM_OS_TYPE == "unix" || PLATFORM_OS_TYPE=="mac" )
     close(p)
 
-# Args are arguments to read.table
-ReadFromClipboard <- function(...){
-     # block transient interactions with a popup
-  dat <- NULL
-  b <- GetPasteClipboardPipe()
-  tryCatch(dat <- read.table(b, ...), 
-  error = function(e) print(e),
-  finally = CloseClipboardPipe(b))
-  return(dat)
+# Dialog for reading in tables
+#
+
+# Options dialog menu
+# setwd("~/rgtk2extras/pkg/RGtk2Extras/R/")
+
+# This wraps read.table and tries to handle a few common errors
+# First common problem. Bug in read.table: if nrows <= 5 it gives an error
+# So if it throws an error, just try scanning 1 row at a time.
+# Error handling: first 5 rows can lack EOF and give an error
+
+# Second common problem: numbers with commas or full stop delimiters.
+# Use 'num.string.ignore' argument to filter out "%" "," etc
+ 
+# quote="", na,strings="", comment.char=""
+# Get pasted data from clipboard. 
+# Arguments are for read.table
+ReadTableFromClipboard = function(...){
+  CHAR_MAX = 10000 # max chars in first 5 lines if they fail
+  rv <- tryCatch({
+  b = GetPasteClipboardPipe()
+  rv = read.table(b, ...)
+  },
+  error = function(e) { 
+        # if the read table fails,
+        # we might need to append EOF
+    if(identical(as.numeric(gregexpr("incomplete final line", e$message)), 1)){
+      tryCatch({
+        # Do this by calling pushBack on another paste pipe
+        b2 = GetPasteClipboardPipe()
+#print(readLines(b2))
+        b2_lines = readChar(b2, CHAR_MAX)
+#        tfn = tempfile(fileext=".txt")
+
+#        cat(c(b2_lines, "\n"), file=tfn)
+#print(readLines(tfn))
+#        rt2 = read.table(tfn, ...)
+#        unlink(tfn)
+#print(b2_lines)
+        if(nchar(b2_lines)==CHAR_MAX)
+          warning(paste("Maximum of", 
+          CHAR_MAX, "characters in first 5 lines exceeded."))
+        pushBack(c(b2_lines, ""), b2)
+        rv = read.table(b2, ...)
+      }, error = stop, 
+      finally = CloseClipboardPipe(b2))
+    } else {
+      # something else went wrong
+      stop(e$message)
+    }
+  }, 
+  finally= CloseClipboardPipe(b))
+  return(rv)
 }
+
+CheckStringsForNumeric = function(rv, num.string.ignore = "%"){
+  # Go through columns. If the first 5 lines give intelligible numbers on removing
+  # the ignored characters, read as numbers.
+
+  suppressWarnings({
+  if(!is.null(num.string.ignore) && nrow(rv)) {
+    num.string.ignore = paste("[", num.string.ignore, "]", sep="")
+    test.idx = 1:min(5, nrow(rv))
+    for(jj in seq(length=ncol(rv))){
+      first.entries = rv[test.idx,jj]
+      where.na = is.na(first.entries)
+        # if removing the separator/% char doesn't introduce new NA's and is OK
+      if(!all(where.na) && is.character(first.entries[!where.na])){
+         read.nums = as.numeric(gsub(num.string.ignore, "", first.entries))
+         if(any(is.numeric(read.nums)) && sum(is.na(read.nums)) <= sum(where.na)){
+           rv[,jj] <- as.numeric(gsub(num.string.ignore, "", rv[,jj]))
+         }
+      }
+    }
+  }
+  })
+  #gsub(",", "", "1,234,567", fixed = TRUE)
+  return(rv)
+}
+
+# Returns true only if the argument is 1x1, and 
+# its whitespace-trimmed content doesn't contain the delimiter
+LooksLikeASingleItem = function(dat, 
+  delimit=paste(" \t;", ifelse(identical(options("OutDec")[[1]], "."), ",", ""), sep="")
+  ){
+dat[1,1] <- StripBlanks(dat[1,1])
+!is.null(dat) && identical(as.numeric(dim(dat)), c(1,1)) && 
+!length(grep(paste("[", delimit, "]", sep=""), dat[1,1]))
+}
+
+ReadFromClipboardWrapper <- function(.local, ...){
+      # Check to see if the user's pasting in something 
+      # that looks like a regular old number, otherwise,
+      # go to the ReadFromClipboard dialog
+  dat <- NULL
+  tryCatch({
+	  dat <- ReadTableFromClipboard(nrow=2, stringsAsFactors=FALSE)
+	  if(LooksLikeASingleItem(dat)){
+	   dat <- CheckStringsForNumeric(dat, num.string.ignore="[$%]")
+	   rfc <- list(xx=dat, 
+		 other.opts = list(paste.row.labels=F, paste.col.labels=F))
+	   } else {
+		 dat <- NULL
+	   }
+   }, error = function(e) {})
+
+  if(is.null(dat)){
+    rfc <- ReadFromClipboard(...) # character vector
+	dat <- rfc$xx
+  }
+  if(!is.null(rfc)){
+      #cmd.list <- rfc$cmd.list
+      other.opts = rfc$other.opts
+	  row.idx <- GetSelectedRows(.local$view, .local, ignore.last.row=EXTRA_ROW)
+	  sc <- GetSelectedColumns(.local, restrict=FALSE)
+	    # if there are no rows, we want to paste in
+	  if(!length(row.idx)){
+	    row.idx <- 1
+	  }
+	    # if there are no columns, we want to paste in
+	  if(length(sc) == 0 && length(.local$allColumns) == 1) 
+	    sc <- 1 # 
+	  if(length(sc) && length(row.idx)){
+	    col.idx <- min(sc)
+	    row.idx <- row.idx[1]
+	    task <- GetTaskPasteIn(.local$theFrame, dat, row.idx, col.idx+COLUMN_OFFSET, do.colnames=other.opts$paste.col.labels, do.rownames = other.opts$paste.row.labels, do.coercion=F)
+	    DoTaskWrapper(.local, task)
+	  }
+  }
+}
+
+# ... args are arguments to read.table, which we might override or ignore (currently ignoring)
+# returns the data frame and options
+ReadFromClipboard <- function(handler=NULL, user.data=NULL, parent.window=NULL, pipe=NULL, fromFile=FALSE, fileName=NULL, sep=NULL, ...){
+## read table dialog
+
+  if(fromFile)
+   stopifnot(!is.null(fileName) && !is.na(fileName) && nchar(fileName))# && file.exists(fileName)) # might be URL
+       
+  function.opts = list(...)
+  dialog <- gtkDialog("Read Table", NULL, c("destroy-with-parent"), "gtk-ok", 1, "gtk-cancel", 0, show = F)
+  dialog$setPosition(GtkWindowPosition["center-on-parent"])              
+  dialog$setTransientFor(parent.window)          
+  
+  #dialog$setDecorated(FALSE)
+  box0 <- gtkVBoxNew(FALSE, 5)  
+
+  if (0){ 
+  fr1 <- gtkFrameNew(label="Choose File")
+  box1 <- gtkHBoxNew(FALSE, 5)
+  fr1$add(box1)
+  
+  entry1 <- gtkEntryNew()
+  entry1$setAlignment(0)
+  button1 <- gtkButtonNewWithLabel("Select File...")
+
+  box1$packStart(entry1, TRUE, TRUE, 0)
+  box1$packStart(button1, FALSE, FALSE, 0)
+
+  nlines1_adj <- gtkAdjustment(5, 1, 1000, 1, 1)
+  nlines1 <- gtkSpinButton(nlines1_adj, 1.0, 0)
+  nlines1$setValue(5)
+  label1 <- gtkLabelNew("Lines To Preview:")
+
+  box1$packEnd(nlines1, FALSE, FALSE, 0)
+  box1$packEnd(label1, FALSE, FALSE, 0)
+
+  gSignalConnect(button1, "clicked", data=entry1, function(obj, label){
+    tryCatch({
+      f <- my_choose_files(file.path(getwd(), "*.*"), multi=F)
+      if(nchar(f) > 0){
+        setwd(dirname(f))
+        # modify settings
+        ext <- strsplit(f, "[.]")[[1]]
+        ext <- ext[length(ext)]
+        if(ext == "csv"){
+          sep1$setActive(2)
+        } else if (ext == "txt") {
+          sep1$setActive(3)
+        } else if (ext == "prn") {
+          sep1$setActive(1)
+        } else {
+          sep1$setActive(0)
+        }
+        
+        entry1$setText(f)
+        preview.txt <- paste(readLines(con = f, n = nlines1$getValue()), collapse="\n")
+        tb$getBuffer()$setText(preview.txt)
+      }
+    }, error = function(e){print(e)})
+  })
+    
+  box1 <- gtkHBoxNew(FALSE, 5)
+
+  fr0 <- gtkFrameNew(label="File Preview")
+  scroll <- gtkScrolledWindowNew()
+  scroll$setPolicy(GtkPolicyType["automatic"], GtkPolicyType["automatic"])
+  
+  tb <- gtkTextViewNew()
+  tb$setEditable(FALSE)
+  tb$setSizeRequest(400, 100)
+  scroll$add(tb)
+  fr0$add(scroll)
+
+  tb$getBuffer()$setText("No File Loaded")
+  box0$add(fr1)
+  #box0$add(fr0)
+
+  }
+
+  fr2 <- gtkFrameNew(label="Table Read Options")
+  
+  box2 <- gtkVBoxNew(FALSE, 5)
+
+  sep.types = list("Tab (\"\t\")" = "\t", "Whitespace" = "", "Space (\" \")" = " ", "Comma (\",\")" = ",", "Semicolon (\";\")" = ";")
+
+  sep1 <- gtkComboBoxNewText()
+  for (ll in names(sep.types)) sep1$appendText(ll)
+  sep1$setTooltipText("The field separator character. Values on each line of the file are separated by this character. White space is one or more spaces, tabs, newlines or carriage returns.")
+  # if (identical(.Options$dec[[1]], ".")) sep1$setActive(2)
+  # else 
+  if(is.null(sep)) {
+    sep1$setActive(0)
+  } else {
+    stopifnot(sep%in%sep.types)
+    sep1$setActive(which(sep==sep.types)-1)
+  }
+  
+  hbox <- gtkHBoxNew(FALSE, 0)
+  hbox$add(gtkLabelNew("Separator"))
+  hbox$add(sep1)
+#  box2$packStart(hbox, FALSE, FALSE, 0)
+
+NUMBER_FORMATS = data.frame(row.names= c("thousands", "decimal"),
+   "US/UK (12,345.67)" = c(",", "."),
+   "France (12 345,67)" = c(" ", ","), 
+   "Germany (12.345,67)" = c(".", ","), stringsAsFactors=F, check.names=FALSE
+)
+
+  dec1 <- gtkComboBoxNewText()
+  dec1$setTooltipText("The characters used for decimal points and thousands separators")
+  dec1$setSizeRequest(120, -1)
+  #for (ll in c(".", ",")) dec1$appendText(ll)
+  for (ll in colnames(NUMBER_FORMATS)) dec1$appendText(ll)
+  # Default to France if we aren't in US/UK
+  dec1$setActive(ifelse(identical(options("OutDec")[[1]], "."), "0", "1"))
+#  hbox <- gtkHBoxNew(FALSE, 0)
+  hbox$add(gtkLabelNew("Format"))
+  hbox$add(dec1)
+  box2$packStart(hbox, FALSE, FALSE, 0)
+
+  opt.box <- gtkHBoxNew(FALSE, 0)
+  opt.box1 <- gtkVBoxNew(FALSE, 0)
+  opt.box2 <- gtkVBoxNew(FALSE, 0)
+  opt.box$add(opt.box1)
+  #opt.box$add(opt.box2)
+  box2$add(opt.box)
+  
+  opt.table <- gtkTableNew(6, 2, homogeneous=FALSE)
+  opt.table$setRowSpacings(5)
+  opt.box$packEnd(opt.table, TRUE, TRUE, 5)
+
+  row.names0 <- gtkCheckButtonNewWithLabel(label="Use Row Labels")
+
+#  row.names0$setActive(TRUE)
+  opt.box1$packStart(row.names0, FALSE, FALSE, 0)
+
+  paste.row.labels <- gtkCheckButtonNewWithLabel(label="Row Labels")
+  paste.col.labels <- gtkCheckButtonNewWithLabel(label="Column Labels")
+  pasteoptsbox <- gtkVBoxNew()
+  pasteoptsbox$add(paste.row.labels)
+  pasteoptsbox$add(paste.col.labels)
+ pasteoptsbox$setTooltipText("Whether to paste row and column labels along with the data")
+
+  check.names1 <- gtkCheckButtonNewWithLabel(label="Check Names")
+  check.names1$setTooltipText(" If TRUE then the names of the variables in the data frame are checked to ensure that they are syntactically valid variable names.  If necessary they are adjusted (by make.names) so that they are, and also to ensure that there are no duplicates.")
+  pasteoptsbox$add(check.names1)
+
+  fr.pasteopts <- gtkFrameNew(label="Paste Options")
+  fr.pasteopts$add(pasteoptsbox)
+
+  header1 <- gtkCheckButtonNewWithLabel(label="Use Header Row")
+  header1$setTooltipText("Whether the file contains the names of the variables as its first line.")
+  header1$setActive(FALSE)
+
+  #check.opts = function(theArg, checkButton)
+  #  if(theArg%in%names(function.opts) && function.opts[[theArg]]%in%c(TRUE, FALSE)) gtkToggleButtonSetActive(checkButton, (function.opts[[theArg]]))
+  #check.opts("header", header1)
+
+  opt.box1$packStart(header1, FALSE, FALSE, 0)
+  
+  # Stolen from Peter Dalgaard
+  ASCII <- c("Any White Space", sapply(1:255, function(i) parse(text=paste("\"\\", structure(i,class="octmode"), "\"", sep=""))[[1]]))
+
+
+  row.names1 <- gtkSpinButton(gtkAdjustment(1, 1, 1000, 1, 1), 1.0, 0)
+  rowTooltip <- "Switching this on allows the column of the table giving row names to be specified. If it is off, and the first row contains one fewer field than the number of columns, the first column in the input is used for the row names."
+  row.names0$setTooltipText(rowTooltip)
+  row.names1$setTooltipText(rowTooltip)
+  row.names1$setValue(1)
+
+  row.names1$setSensitive(row.names0$getActive())
+  gSignalConnect(row.names0, "toggled", function(widget){
+    row.names1$setSensitive(widget$getActive())
+  })
+    
+  #hbox <- gtkHBoxNew(FALSE, 0)
+  label = gtkLabelNew("Use Column")
+  label$setAlignment(1, 0.5)                
+  opt.table$attach(label, 0, 1, 0, 1, xpad=10)
+  opt.table$attach(row.names1, 1, 2, 0, 1)
+
+  skip1 <- gtkSpinButton(gtkAdjustment(0, 0, 1000, 1, 1), 1.0, 0)
+  skip1$setValue(0)
+skip1$setTooltipText("the number of lines of the data file to skip before beginning to read data.")
+  label = gtkLabelNew("Rows To Skip")
+  label$setAlignment(1, 0.5)
+  opt.table$attach(label, 0, 1, 1, 2, xpad=10)
+  opt.table$attach(skip1, 1, 2, 1, 2)
+  
+  colClasses1 <- gtkComboBoxNewText()
+  for (ll in c("Default", "logical", "integer", "numeric", "complex", "character", "raw", "factor", "Date", "POSIXct")) colClasses1$appendText(ll)
+  colClasses1$setActive(0)
+  #hbox <- gtkHBoxNew(FALSE, 0)
+  label = gtkLabelNew("Column Classes")
+  label$setAlignment(1, 0.5)  
+  opt.table$attach(label, 0, 1, 2, 3, xpad=10)
+  opt.table$attach(colClasses1, 1, 2, 2, 3)
+  
+  na.strings1 <- gtkEntryNew()
+  na.strings1$setTooltipText("strings which are to be interpreted as NA values.  Blank fields are also considered to be missing values.")
+  na.strings1$setText("NA")
+  hbox <- gtkHBoxNew(FALSE, 0)
+  label = gtkLabelNew("NA String")
+  label$setAlignment(1, 0.5)  
+  opt.table$attach(label, 0, 1, 3, 4, xpad=10)
+  opt.table$attach(na.strings1, 1, 2, 3, 4)
+
+  quote1 <- gtkComboBoxNewText()
+  for (ll in c("", "'", "\"", "\"'")) quote1$appendText(ll)
+quote1$setTooltipText("the set of quoting characters. To disable quoting altogether, use \"\" ")
+  quote1$setActive(0)
+  #hbox <- gtkHBoxNew(FALSE, 0)
+  label = gtkLabelNew("Quotes")
+  label$setAlignment(1, 0.5)  
+  opt.table$attach(label, 0, 1, 4, 5, xpad=10)
+  opt.table$attach(quote1, 1, 2, 4, 5)
+  
+  fill1 <- gtkCheckButtonNewWithLabel(label="Fill Unequal Length Rows")
+  fill1$setTooltipText("If TRUE then in case the rows have unequal length, blank fields are implicitly added.")
+  fill1$setActive(TRUE)
+  opt.box1$packStart(fill1, FALSE, FALSE, 0)
+
+  stringsAsFactors1 <- gtkCheckButtonNewWithLabel(label="Read Strings As Factors")
+stringsAsFactors1$setTooltipText("Convert character variables to factors.")
+  stringsAsFactors1$setActive(FALSE)
+  opt.box1$packStart(stringsAsFactors1, FALSE, FALSE, 0)
+
+  num.ignore.string1 <- gtkEntryNew()
+num.ignore.string1$setTooltipText("Ignore these characters if they appear inside or around numeric variables. For example, reading '12.3%', '12 345.67' and '$512.00' as numbers should ignore '%', ' ' and '$' respectively.")
+
+  num.ignore.string1$setText(paste("%$", NUMBER_FORMATS["thousands", dec1$getActiveText()], sep=""))
+  hbox <- gtkHBoxNew(FALSE, 0)
+  label = gtkLabelNew("Numbers Ignore")
+  label$setAlignment(1, 0.5) 
+  opt.table$attach(label, 0, 1, 5, 6, xpad=10)
+  opt.table$attach(num.ignore.string1, 1, 2, 5, 6)
+
+  opt.box1$add(fr.pasteopts)
+  
+  fr2$add(box2)
+  
+  #box0$packStart(fr1, FALSE, FALSE, 0)
+  #box0$packStart(fr0, FALSE, FALSE, 0)
+  
+  fr3 <- gtkFrameNew(label="Table Preview")
+  box3 <- gtkVBoxNew(FALSE, 5)
+  #preview.button <- gtkButtonNewWithLabel("  Preview Table  ")
+  #hbox <- gtkHBoxNew(FALSE, 0)
+  #hbox$packEnd(preview.button, FALSE, FALSE, 5)
+  #box3$packStart(hbox, FALSE, FALSE, 0)
+  
+  tb2 <- gtkTextViewNew()
+  tb2$setSizeRequest(400, 200)
+  tb2$getBuffer()$setText("No Table loaded")
+  box3$packStart(tb2)
+
+  read_table <- function(nrows=-1, doMsg=FALSE){
+#    if(nchar(entry1$getText()) == 0) stop("No file selected")
+
+    row.names.arg <- NULL
+    if(row.names0$getActive()) row.names.arg <- as.integer(row.names1$getText())
+
+    col.classes.arg <- NA
+
+    cmd.list = list(header= header1$getActive(),
+      sep = sep.types[[sep1$getActiveText()]],
+      skip= as.integer(skip1$getText()),
+      #row.names = row.names.arg,
+      nrows = nrows,
+      colClasses= col.classes.arg,
+      stringsAsFactors = stringsAsFactors1$getActive(),
+      fill = fill1$getActive(),
+      dec = NUMBER_FORMATS["decimal", dec1$getActiveText()],
+      quote = quote1$getActiveText(),
+      strip.white=TRUE,
+      comment.char = "",
+      check.names=check.names1$getActive()
+    )
+    
+    if(fromFile){
+      stopifnot(!is.null(fileName) && !is.na(fileName) && nchar(fileName))# && file.exists(fileName)) # could be url
+      cmd.list$file <- fileName
+      GetTable <- read.table
+    } else { 
+      GetTable <- ReadTableFromClipboard
+    }
+    
+    if(colClasses1$getActiveText() != "Default")  {
+      #if(col.classes.arg != "character" && !is.null(row.names.arg)){
+      cmd.list$nrows=5
+      xx <- do.call(GetTable, cmd.list) # read it with row names NULL 
+      NN <- dim(xx)[2]
+      if(NN){
+        cmd.list$colClasses <- c("character", rep(colClasses1$getActiveText(), NN-1))
+      }
+      cmd.list$nrows=nrows
+   }
+
+    xx <- do.call(GetTable, cmd.list) # read it with row names NULL 
+
+    # ignore a percentage sign too
+    #num.string.ignore = paste("[", NUMBER_FORMATS["thousands", dec1$getActiveText()], num.ignore.string1$getText(), "]", sep="")
+
+    
+    num.string.ignore = num.ignore.string1$getText()
+    xx <- CheckStringsForNumeric(xx, num.string.ignore)
+     # options for pasting into the table after reading
+    other.opts = list(
+      paste.row.labels = paste.row.labels$getActive(), 
+      paste.col.labels = paste.col.labels$getActive()
+    )
+
+    if(!is.null(row.names.arg) && length(dim(xx))==2 && 0 < row.names.arg && row.names.arg <= ncol(xx)){
+	  #dupes <- duplicated(xx[,row.names.arg])
+      #if(any(dupes)) {
+	  #	  xx <- xx[!dupes,,drop=F]
+      #  #if(doMsg) message("Dropping ", sum(dupes), " row(s) from table to create unique row names")
+      #}
+      xr <- as.character(xx[,row.names.arg])
+      dupes <- duplicated(xr)
+      nas <- is.na(xr)
+      if(any(nas)) xr[nas] <- ""
+      if(any(dupes)) xr <- make.unique(xr)
+      rownames(xx) <- xr
+      xx <- xx[,-row.names.arg,drop=F]
+    }
+    return(list(xx=xx, cmd.list=cmd.list, other.opts=other.opts))
+  } # end read_table
+
+update_view = function(obj=NULL, label=NULL){
+    tryCatch({    
+      preview <- read_table(500)$xx
+#fr3$setLabel(paste("Table Size:", nrow(preview), "R x", ncol(preview), "C"))
+      obj <- gtkDfEdit(preview, size.request = c(400, 200), col.width=100, editable=FALSE)
+      theObj = gtkContainerGetChildren(box3)[[1]]
+      if(!is.null(theObj)) 
+         gtkWidgetDestroy(theObj)
+      gtkBoxPackEnd(box3, obj)
+    }, error = function(e) {
+      tb3 <- gtkTextViewNew()
+      tb3$setWrapMode(GtkWrapMode['word_char'])
+      tb3$setSizeRequest(400, 200)
+      tb3$getBuffer()$setText(as.character(e$message))
+      theObj = gtkContainerGetChildren(box3)[[1]]       
+      if(!is.null(theObj)) 
+         gtkWidgetDestroy(theObj)
+      box3$packEnd(tb3)
+    })
+  }
+
+  #gSignalConnect(preview.button, "clicked", update_view)
+
+sapply(list(row.names0, header1, fill1, stringsAsFactors1, check.names1),
+   function(x) tryCatch(gSignalConnect(x, "toggled", update_view), error=function(e) print(e)))
+
+  sapply(list(num.ignore.string1, sep1, skip1, colClasses1, quote1, na.strings1),
+   function(x) tryCatch(gSignalConnect(x, "changed", update_view), error=function(e) print(e)))
+
+	gSignalConnect(dec1, "changed", 
+	  function(...){
+	    all.ign <- paste(c("[", NUMBER_FORMATS["thousands",], "]"), collapse="")
+		txt <- gsub(all.ign, "", num.ignore.string1$getText())
+        new.ign <- NUMBER_FORMATS["thousands", dec1$getActiveText()]
+	    num.ignore.string1$setText(paste(txt, new.ign, sep=""))
+	  } 
+	)
+
+	gSignalConnect(row.names0, "toggled", 
+	  function(...){
+		paste.row.labels$setActive(row.names0$getActive())
+	  }
+	)
+
+	gSignalConnect(header1, "toggled", 
+	  function(...){
+		paste.col.labels$setActive(header1$getActive())
+	  } 
+	)
+
+  fr3$add(box3)
+
+  box0$packStart(fr3)
+  box0$packStart(fr2, FALSE, FALSE, 0)
+  
+  dialog[["vbox"]]$packStart(box0, TRUE, TRUE, 10)
+  dialog$showAll()
+  update_view()
+
+  xx <- NULL
+  rv <- NULL
+  if(dialog$run() == 1){# && nchar(entry1$getText())){
+      w <- TransientWindow("Copying...")
+      on.exit(w$destroy())      
+  tryCatch({               
+   rv <- read_table(doMsg=TRUE)
+   xx <- rv$xx
+   cmd.list = rv$cmd.list
           
+   #aa <- basename(entry1$getText())
+   #newname <- make.names(strsplit(aa, "[.]")[[1]][1])
+   #assign(newname, xx, envir=.GlobalEnv)         
+   
+  }, error = function(e) {print(e)})
+   dialog$destroy()
+ } else {
+   dialog$destroy()
+ }
+ return(rv)
+  #return(xx)
+}
+
+    
 # from gWidgets
 gtkMenuPopupHack <- function (object, parent.menu.shell = NULL, parent.menu.item = NULL, 
   func = NULL, data = NULL, button, activate.time) {
@@ -903,6 +1664,7 @@ BlockSizeHandler <- function(the.column, data){
 DoBlockSize <- function(the.column, loc.window, handler, data, start.lvl=NULL){
 
   .BlockEnv <- new.env()
+
   .BlockEnv$the.column <- the.column 
   .BlockEnv$data <- data
 
@@ -1031,8 +1793,9 @@ DoFactorEditor <- function(theFrame, toplevel, col.idx=integer(0),
 
     i <- path$getIndices()[[1]]+1
 
-      # editing the level names
-    zz <- theFrame[,.FactorEnv$col.idx]
+      # editing the level names # 101010
+    #zz <- theFrame[,.FactorEnv$col.idx]
+    zz <- .FactorEnv$the.column# <- factor(.FactorEnv$the.column, levels=unique(xx))    
     lzz <- levels(zz)    
     ww <- which(xx[i]==lzz)
     
@@ -1213,6 +1976,7 @@ DoFactorEditor <- function(theFrame, toplevel, col.idx=integer(0),
     if(!is.null(contr) && contr==unlist(contrast.coding)[ii]) grb$setActive(TRUE)
     gSignalConnect(grb, "toggled", function(grb, ...) if(grb$getActive()) UpdateLabel())
     box4$packStart(grb, FALSE, FALSE, 0)
+
   }
 
   data.factors <- which(GetClasses(theFrame) == "factor")
@@ -1458,97 +2222,6 @@ TABLE_IMPORT_OPTIONS_FUNC <- function(results){
   list(colClasses=colClasses, do.rownames=do.rownames, do.colnames=do.colnames)
 }
 
-# This is the dialog for pasting stuff to the whole frame
-DoPasteDialog <- function(.local, do.rownames=T, do.colnames=T, colClasses=NULL) 
-  MakeRadioDialog(title = "Paste In Data",
-    items = TABLE_IMPORT_OPTIONS, 
-    data=list(.local=.local), 
-    handler=function(results, data){
-      .local <- data$.local
-      rv <- TABLE_IMPORT_OPTIONS_FUNC(results)
-      do.rownames <- rv$do.rownames
-      do.colnames <- rv$do.colnames      
-      colClasses <- rv$colClasses
-        
-      dat <- ReadFromClipboard(header=do.colnames,sep="\t", 
-        row.names=if(do.rownames) 1 else NULL, colClasses=colClasses, stringsAsFactors=F)
-      if(!is.null(dat)){
-         task <- GetTaskPasteIn(.local$theFrame, dat, 
-           1, 2, do.rownames=do.rownames, do.colnames=do.colnames, do.coercion=F)
-         DoTaskWrapper(.local, task)
-      }
-    })
-
-FILE_IMPORT_OPTIONS <- TABLE_IMPORT_OPTIONS 
-ll <- length(FILE_IMPORT_OPTIONS)
-FILE_IMPORT_OPTIONS[[ll+1]] <- list("File Type" = c("Comma Separated (csv)", "Tab Separated (txt)"))
-
-FILE_IMPORT_OPTIONS_FUNC <- function(results){
-  sep<-""
-  if (results$"File Type"%in%"Comma Separated (csv)")
-    sep<-","
-  if (results$"File Type"%in%"Tab Separated (txt)")
-    sep<-""
-  list(sep=sep)
-}
-
-#
-#win <- gtkWindowNew()
-#tv <- gtkTextViewNew()
-#tv$setEditable(FALSE)
-#win$add(tv)
-#buffer <- tv$getBuffer()
-#xx <- readLines("xx.txt", 2)
-#buffer$setText(xx)
-
-# This is the dialog for pasting stuff to the whole frame
-DoImportDialog <- function(data) MakeRadioDialog(title = "Table Characteristics",
-    items = FILE_IMPORT_OPTIONS,
-    data=data, 
-    handler=function(results, data){
-      .local <- data$.local
-      file.name <- data$file.name
-      rv <- TABLE_IMPORT_OPTIONS_FUNC(results)
-      do.rownames <- rv$do.rownames
-      do.colnames <- rv$do.colnames
-      colClasses <- rv$colClasses 
-      rv <- FILE_IMPORT_OPTIONS_FUNC(results)
-      sep <- rv$sep
-      
-      tryCatch({
-        cf <- count.fields(file.name, sep=sep,comment.char="")
-        tt <- table(cf)
-        cf.msg <- paste(paste("Lines with ", names(tt), " fields: ", tt, sep=""),  collapse="\n")
-        msg <- paste("Fields in file:\n", cf.msg)
-        # scan first 5 in to get colClasses vector
-        if(colClasses != "character" && do.rownames){        
-          xx <- read.table(file.name, sep=sep,header=do.colnames, 
-               row.names=if(do.rownames) 1 else NULL, 
-               stringsAsFactors=F,fill=T,comment.char="", nrows=5)  
-          NN <- dim(xx)[2]
-          col.vector <- c("character", rep(colClasses, NN))
-        }  else {
-          col.vector <- "character"
-        }
-                     
-        data = list(.local=.local, do.rownames=do.rownames, 
-          do.colnames=do.colnames, 
-          sep=sep, file.name=file.name,  col.vector = col.vector)
-        quick_query(msg, data, win=.local$toplevel,
-          handler=function(data){
-            attach(data, warn=F)
-            dat <- read.table(file.name, sep=sep,header=do.colnames, 
-             row.names=if(do.rownames) 1 else NULL, 
-             stringsAsFactors=F,colClasses= col.vector,
-             fill=T,comment.char="")
-            ReplaceEditWindow(MakeInternalDataFrame(dat), .local)
-          }
-        )
-       }, error = function(e) {
-         print(e)
-      })
-    })
-
 ###############################################################################
 # Sort dialog
 ###############################################################################
@@ -1569,6 +2242,8 @@ MakeRadiobuttonGroup <- function(labels, theChoice=1){
 MakeComboEntry <- function(items, box1){
   box2 <- gtkHBoxNew()
 	cb1 <- gtkComboBoxNewText()  
+
+
 	cb1$show()
 	cb1["width-request"] <- 100		
 	for (item in items) # omit "rows" heading
@@ -1577,7 +2252,7 @@ MakeComboEntry <- function(items, box1){
   box5 <- gtkVBoxNew()		
   box5$packStart(cb1, TRUE, FALSE, 0)    
   box2$packStart(box5, TRUE, TRUE, 10)
-  xx1 <- MakeRadiobuttonGroup(c("Ascending", "Descending"))
+  xx1 <- MakeRadiobuttonGroup(c("Low to high", "High to low"))
   box3 <- xx1$box
   grb1 <- xx1$grb
   xx2 <- MakeRadiobuttonGroup(c("Default", "Character", "Numeric"))
@@ -1602,7 +2277,7 @@ DoSortDialog <- function(theFrame, handler, .localenv){
   box0 <- gtkVBoxNew(FALSE, 5)
   window$add(box0)
   items <- colnames(theFrame)
-  fr0 <- gtkFrameNew(label="Sort Key Selection")
+  fr0 <- gtkFrameNew(label="Order By Column")
   box1 <- gtkVBoxNew(FALSE, 5)
   box0$add(fr0)
   fr0$add(box1)
@@ -1610,10 +2285,10 @@ DoSortDialog <- function(theFrame, handler, .localenv){
   .sl <- new.env()
   .sl$theList <- list()
   .sl$theList[[length(.sl$theList)+1]] <- MakeComboEntry(items, box1)
-  fr1 <- gtkFrameNew(label="Add/Remove Keys")
+  fr1 <- gtkFrameNew(label="Add/Remove Columns")
   box9000 <- gtkHBoxNew(FALSE, 5)
   fr1$add(box9000)
-  button <- gtkButtonNewWithLabel("Remove A Key")
+  button <- gtkButtonNewWithLabel("- Column")
   gSignalConnect(button, "clicked", function(obj, ...){
     if(length(.sl$theList)<2) return(FALSE)
     .sl$theList[[length(.sl$theList)]]$box$destroy()
@@ -1621,7 +2296,7 @@ DoSortDialog <- function(theFrame, handler, .localenv){
     window$resize(window$getSize()$width, 1)
   })
   box9000$packEnd(button, FALSE, FALSE, 0)
-  button <- gtkButtonNewWithLabel("Add A Key")
+  button <- gtkButtonNewWithLabel("+ Column")
   gSignalConnect(button, "clicked", function(obj, data=.sl){
     .sl$theList[[length(.sl$theList)+1]] <- MakeComboEntry(items, box1)
   })
@@ -1671,8 +2346,8 @@ DoSortDialog <- function(theFrame, handler, .localenv){
 
 DoTaskWrapper <- function(.local, task, do.undo = TRUE){
   #tryCatch({
+#print("DoTaskWrapper")
     rv <- DoTask(.local, .local$theFrame, task, .local$changed.handler)
-
     rows.changed <- NULL
       # Special for changecells to minimize edit time
     if(length(task) == 1 && task[[1]]$func == "ChangeCells")
@@ -1689,6 +2364,7 @@ DoTaskWrapper <- function(.local, task, do.undo = TRUE){
       if(object.size(.local$undoStack) > STACK_LIMIT){
         warning("Stack full")    
         jj <- 0
+
         while(object.size(.local$undoStack) > STACK_LIMIT && length(.local$undoStack))
           .local$undoStack[[jj <- jj + 1]] <- NULL
         if(object.size(.local$undoStack) > STACK_LIMIT){ 
@@ -1775,7 +2451,7 @@ AddHScrollTimeout <- function(obj, event, data){
 ############################################################
 # End autoscroll
 
-PaintSelectionOnTimeout <- function(.local){
+PaintSelectionOnTimeout <- function(.local, selection=.local$ss, widget=.local$view){
   # We want to add a timeout to the LAST key pressed.
   try({
     gSourceRemove(.local$do.paint.timeout) 
@@ -1783,59 +2459,10 @@ PaintSelectionOnTimeout <- function(.local){
   }, silent=T)
 
   .local$do.paint.timeout <- gTimeoutAdd(100, function(){
-		.local$do.paint <- TRUE
-    .local$rectangles <- list()
-     UpdateSelectionRectangle(.local)
-		return(FALSE)
+  	.local$do.paint <- TRUE
+    UpdateSelectionRectangle(.local, selection, widget)
+    return(FALSE)
 	})
-}
-
-
-PaintRowSelectionOnTimeout <- function(.local){
-#  # We want to add a timeout to the LAST key pressed.
-#  try({
-#    gSourceRemove(.local$do.rows.paint.timeout) 
-#    .local$do.rows.paint.timeout <- NULL
-#  }, silent=T)
-#
-#  .local$do.rows.paint.timeout <- gTimeoutAdd(100, function(){
-#     #print("Updating")
-    if(length(GetSelectedColumns(.local))==0){
-      gsr <- gtkTreeSelectionGetSelectedRows(.local$ss.rn)$retval
-      if(length(gsr)){# && length(gsr) < MAX_ROWS_TO_DRAW_SELECTION){
-    		.local$do.paint <- TRUE
-        sr <- sapply(gsr, gtkTreePathGetIndices)+1
-        cc <- .local$allColumns
-        view <- .local$view
-        ma <- MergeAdjacent(sort(sr))
-        rectangles <- vector("list", ma$length)    
-        FIRST_COL <- cc[[1]]$column
-        if(length(cc) > 1)
-          LAST_COL <- cc[[length(cc)-1]]$column
-        else 
-          LAST_COL <- FIRST_COL
-          
-        for(i in 1:ma$length){
-          path.start <- gsr[[ma$start[i]]]
-          if(ma$start[i] == ma$end[i])
-            path.end <- path.start
-          else
-            path.end <- gsr[[ma$end[i]]]
-          rect.start <- gtkTreeViewGetCellArea(view, path.start, FIRST_COL)$rect
-          rect.end <- gtkTreeViewGetCellArea(view, path.end, LAST_COL)$rect
-          rect <- gdkRectangleUnion(rect.start, rect.end)$dest
-          rect$y <- rect$y + .local$sw.view.va$getValue()
-          #rect$height <- .local$sw.view.va[["upper"]]
-          rectangles[[i]] <- rect
-        }
-        .local$rectangles <- rectangles        
-      } else {
-        .local$rectangles <- list()      
-      }
-     .local$viewGetBinWindow$invalidateRect(NULL, FALSE)      
-    }
-#		return(FALSE)
-#	})
 }
   
 ####
@@ -1843,68 +2470,85 @@ PaintRowSelectionOnTimeout <- function(.local){
 MoveCursor <- function(widget, direction, .local, stat=as.integer(0)){
   cursor.info <- gtkTreeViewGetCursor(widget)
   path <- cursor.info$path
+  column <- cursor.info$focus.column
   allColumns <- .local$allColumns
-  row.idx <- as.integer(gtkTreePathGetIndices(path))+1
-  
-  #print(row.idx)
+  page.flag <- FALSE
+  if(is.null(path)){
+    row.idx = 1
+    new.idx = 2
+  } else {
+    row.idx <- as.integer(gtkTreePathGetIndices(path))+1
+    new.idx <- GetColIdx(cursor.info$focus.column)  
+  }
 
-  new.idx <- GetColIdx(cursor.info$focus.column)
-  ori.idx <- new.idx
+  col.idx <- new.idx
+  if(IsShift(stat)){
+    if(is.null(.local$selections))
+      .local$selections <- list(list(start=c(row.idx=row.idx, col.idx=col.idx)))
+  }
 
-  if (direction == "right"){
+if (direction %in% c("page_down", "page_up")){
+    page.flag <- TRUE
+    visible_row_range <-  as.integer(diff(sapply(gtkTreeViewGetVisibleRange(widget)[-1], gtkTreePathGetIndices)))
+    row.idx <- row.idx + 
+       ifelse(direction=="page_down", 1, -1)*visible_row_range 
+    if(direction=="page_down") row.idx <- row.idx-1
+    else if(direction=="page_up") row.idx <- row.idx
+    if(row.idx < 1) 
+      row.idx <- 1
+    else if (row.idx > nrow(.local$theFrame)) 
+      row.idx <- nrow(.local$theFrame)
+    path <- gtkTreePathNewFromString(row.idx-1)
+    gtkTreeViewScrollToCell(widget, path, column=NULL, use.align=TRUE, row.align=0)
+    gtkTreeViewSetCursorOnCell(widget, path, NULL, NULL, FALSE)
+  } else if (direction == "right"){
      if( new.idx < length(allColumns)){
        new.idx <- new.idx+1
      } else {
-       insert.dialog(.local, row.idx=row.idx-1, col.idx=new.idx, insert.type ="Columns", win=.local$toplevel)
-     }
-  } else if (direction == "left" && 1 < new.idx) {
-    new.idx <- new.idx-1
+       if(.local$editable) insert.dialog(.local, row.idx=row.idx-1, col.idx=new.idx, insert.type ="Columns", win=.local$toplevel)
+     } 
+  } else if (direction == "left") {
+    if(1 < new.idx)
+      new.idx <- new.idx-1
   } else if (direction == "down") {
-    if (row.idx < dim(.local$theFrame)[1]){
+    if (row.idx < nrow(.local$theFrame)){
       gtkTreePathNext(path)
+      row.idx <- row.idx+1
     } else {
-       insert.dialog(.local, row.idx=row.idx-1, col.idx=new.idx, insert.type ="Rows", win=.local$toplevel)
+       if(.local$editable) insert.dialog(.local, row.idx=row.idx-EXTRA_ROW, col.idx=new.idx, insert.type ="Rows", win=.local$toplevel)
     }            
   } else if (direction == "up") {
     gtkTreePathPrev(path)
-  } else {
-  }      
-    #column indicators
-  if(direction%in%c("up", "down") && stat == as.integer(0)){
-    if(.local$do.paint){    # we've been drawing a rectangle
-      .local$do.paint <- FALSE
-      .local$viewGetBinWindow$invalidateRect(NULL, FALSE)    
-    }
-    UpdateColumnSelection(.local, new.idx)
-  }
-  selectedColumns.new <- integer(0) 
-  if(direction%in%c("left", "right")){
-    col.idx <- new.idx
-    if (stat == as.integer(0)) { # select only this column
-      if(.local$do.paint){
-        .local$do.paint <- FALSE
-        .local$viewGetBinWindow$invalidateRect(NULL, FALSE)    
-      }
-      .local$start.key.column.select <- NULL
-       selectedColumns.new <- col.idx     
-       UpdateColumnSelection(.local, selectedColumns.new)
-    } else if (as.flag(stat) & GdkModifierType['shift-mask']) { # range
-      if(.local$do.paint){
-        .local$do.paint <- FALSE
-        .local$viewGetBinWindow$invalidateRect(NULL, FALSE)    
-      }
-        # this had better exist!
-        # Found a bug here 082210
-      selectedColumns.new <- .local$start.key.column.select:col.idx
-      UpdateColumnSelection(.local, selectedColumns.new)
-      PaintSelectionOnTimeout(.local)
-    } else {
-      .local$start.key.column.select <- NULL
-    }
+    if(row.idx > 1) row.idx <- row.idx-1
+  } else if (direction%in%c("home", "end")) {
+    row.idx <- ifelse(direction=="home", 1, nrow(.local$theFrame))
+    path <- gtkTreePathNewFromString(row.idx-1)
+    gtkTreeViewScrollToCell(widget, path, column=NULL, use.align=TRUE, row.align=0)
+    gtkTreeViewSetCursorOnCell(widget, path, NULL, NULL, FALSE)
   }
 
-  new.col <- allColumns[[new.idx]]$column
-  renderer <- allColumns[[new.idx]]$renderer
+  if(as.flag(stat) & GdkModifierType['shift-mask']){
+    stopifnot(length(.local$selections)>0)
+    .local$selections[[1]]$end <- c(row.idx=row.idx, col.idx=new.idx)
+    gdkWindowInvalidateRect(.local$viewGetBinWindow, NULL, FALSE)
+    PaintSelectionOnTimeout(.local)
+  } else {
+      # this won't get called, we caught these in ViewKeyPress
+    if (as.flag(stat) & GdkModifierType['control-mask']) {
+    } else {
+      if(!is.null(.local$selections)){
+        .local$selections <- NULL
+        UpdateSelectionRectangle(.local)
+      }
+      UpdateColumnSelection(.local, new.idx)          
+    }
+  }
+      
+  if(!page.flag){
+    new.col <- allColumns[[new.idx]]$column
+    renderer <- allColumns[[new.idx]]$renderer
+    gtkTreeViewSetCursorOnCell(widget, path, new.col, renderer, FALSE)
+  }
 
     # ScrollToCell seems to stop working after we add a new column.
     # This routine is from gtktreeview::gtk_tree_view_scroll_to_cell
@@ -1919,44 +2563,16 @@ MoveCursor <- function(widget, direction, .local, stat=as.integer(0)){
       dest_x <- cell_rect$x + cell_rect$width - vis_rect$width
     gtkTreeViewScrollToPoint(widget, dest_x, dest_y)
   }
-  #if(!gtkWidgetIsFocus(.local$view)) { #added 4-21-2010
-  #    print("MoveCursor: focus is FALSE")   
-  #   gtkWidgetGrabFocus(.local$view)
-  #  #gtkTreeViewSetCursorOnCell(widget, path, new.col, renderer, TRUE)         
-  #   #.local$flash.cursor <- TRUE
-  #}  
-  #if(!gtkWidgetIsFocus(.local$view)) #added 4-21-2010
-  #    print("MoveCursor: focus is STILL FALSE")      
-    
-  if(.local$flash.cursor){
-   force.reset.focus(.local)
-#    gtkTreeViewSetCursorOnCell(widget, path, new.col, renderer, TRUE)    
-    .local$flash.cursor <- FALSE
-  }          
 
-  gtkTreeViewSetCursorOnCell(widget, path, new.col, renderer, FALSE)
-#  print("MoveCursor returning")   
-  # This is to fix a bug where the window doesn't initially get focus.
-  # We pop up a transient window to give focus back to wherever we called from.
-  if(!gtkWidgetIsFocus(.local$view)) { #added 4-21-2010 
-    force.reset.focus(.local)
-  }
+selections <- list(
+    list(start=c(row.idx=row.idx, col.idx=new.idx),
+         end=c(row.idx=row.idx, col.idx=new.idx)))
+   # update the selection only if we didn't select anything else
+  if(!length(.local$selections)) DoUserCall("Selection", list(selections=selections), .local)
+
+  #} # if 0
   return(TRUE)
 }  
-
-force.reset.focus <- function(.local){
-#return()
-  on.exit({w$destroy(); .local$view$grabFocus()}) # block concurrent user calls with a modal window
-  w <- gtkWindowNew("Refocusing...", show=F)
-  w$setDecorated(FALSE)
-  lab <- gtkLabelNew("Refocusing...")
-  w$add(lab)
-  w$setPosition(GtkWindowPosition["center-on-parent"])              
-  w$setTransientFor(.local$toplevel)    
-  w$setModal(TRUE)        
-  w$showAll()
-  lab$grabFocus()
-}
 
 RowNamesClearContents <- function(row.idx, .local){
   if(length(row.idx)==0) return(FALSE)
@@ -1973,7 +2589,6 @@ GetColIdx <- function(column){
   #  error = function(e) integer(0))
 }
 
-# Bug - can still edit last row name
 RowNamesKeyPress <- function(widget, event, data) {
   .local <- data
   keyval <- event[["keyval"]] 
@@ -1983,30 +2598,38 @@ RowNamesKeyPress <- function(widget, event, data) {
     #print("Ctrl-z")
     DoUndo(.local)
     return(TRUE)
-  } else if(keyval == GDK_Delete) {
-    row.idx <- GetSelectedRows(.local$view.rn, .local)
-    RowNamesClearContents(row.idx, .local)
+  } else if(keyval == GDK_Delete && .local$editable) {
+    #row.idx <- GetSelectedRows(.local$view.rn, .local)
+    #RowNamesClearContents(row.idx, .local)
+    DeleteSelection(.local)
+    #.local$allow.key.flag <- TRUE                  
     return(TRUE)
   } else if (CtrlLetter(keyval, stat, GDK_c)) {
      # block transient interactions with a popup
-     #print("Ctrl-c")
-    gsr <- GetSelectedRows(.local$view.rn, .local)
       w <- TransientWindow("Copying...", .local)
-      on.exit(w$destroy())    
-    if(!length(gsr) && dim(.local$theFrame)[1] > 1) gsr <- 1:(dim(.local$theFrame)[1]-1)
-    CopyToClipboard(.local$theFrame[gsr, 1:(length(.local$allColumns)-1)+COLUMN_OFFSET, drop=F], do.rownames=T, do.colnames=T)
-    retval <- TRUE
-    .local$allow.key.flag <- TRUE                          
+      on.exit(w$destroy())   
+      nf <- GetSelectedCells(.local)
+     
+      if(!is.null(nf)) CopyToClipboard(nf, 
+        do.rownames=!RowNamesAreNull(.local$theFrame), do.colnames=FALSE)
+      return(TRUE)
+      #return(TRUE)
+  } else if (CtrlLetter(keyval, stat, GDK_v) && .local$editable){
+	   dat <- ReadFromClipboard(.local, row.names=1, sep="\t", stringsAsFactors=F)$xx # character vector
+  cursor.info <- gtkTreeViewGetCursor(widget)  
+  row.idx <- as.integer(gtkTreePathGetIndices(cursor.info$path))+1
+	  if(!is.null(dat)){
+		if(!length(row.idx)) row.idx <- 1
+		col.idx <- 1
+		row.idx <- row.idx[1]
+		task <- GetTaskPasteIn(.local$theFrame, dat, row.idx, col.idx+COLUMN_OFFSET, do.colnames=F, do.rownames = F)
+		DoTaskWrapper(.local, task)
+   }
   }
            
     # ignore last row
-  cursor.info <- gtkTreeViewGetCursor(widget)    
-  if(!keyval%in%myValidNavigationKeys || keyval == GDK_Return && !is.null(cursor.info$path)){
-    col.idx <- GetColIdx(cursor.info$focus.column)
-    row.idx <- as.integer(gtkTreePathGetIndices(cursor.info$path))+1
-    if(row.idx > dim(.local$theFrame)[1]-1) return(TRUE)        
-  }
-  
+  cursor.info <- gtkTreeViewGetCursor(widget)  
+
   if(keyval%in%myValidNavigationKeys){
     #cat("*")
     if( .local$scrollRowNames) { 
@@ -2019,10 +2642,11 @@ RowNamesKeyPress <- function(widget, event, data) {
       .local$scrollRowNames <- TRUE 
       return(TRUE)
    }
-  } 
-    return(FALSE)
-}
+  }
 
+
+  return(FALSE)
+}
 
   # Apply command to range [sr, sc]
 CommandData <- function(.local, sr, sc) {
@@ -2037,6 +2661,8 @@ CommandData <- function(.local, sr, sc) {
       signal = c("default", function(apply.over, position){
         if(get.value(apply.over) == 1) set.value(position, "Right")
         if(get.value(apply.over) == 2) set.value(position, "Bottom")        
+
+
       }, "position"),
     insert.trueFalseItem = TRUE, label = "Put Output In Table",
       signal = c("default", "toggle.sensitive", "position"),    
@@ -2091,7 +2717,7 @@ CommandData <- function(.local, sr, sc) {
          dat <- ragged.cbind(xx)
          new.dat <- array(NA, c(dim(dat)[1], dim(.local$theFrame)[2]))
          new.dat[1:dim(dat)[1], sc+1] <- dat
-         new.dat <- data.frame(new.dat, stringsAsFactors=F)
+         new.dat <- data.frame(new.dat, stringsAsFactors=FALSE, check.names=FALSE)
          task <- list(list(func="InsertRows",                   
                  arg = list(nf = new.dat, row.idx=max(sr)+rep(1, dim(new.dat)[1]))))
         DoTaskWrapper(.local, task)      
@@ -2129,6 +2755,7 @@ insert.dialog <- function(.local, row.idx=NULL, col.idx=NULL, insert.type ="Rows
       stopifnot(!is.null(idx))      
       theIdx <- rep(idx+1, n)                  
       arg$col.idx <- theIdx
+
     }
     DoTaskWrapper(.local,list(list(func=func,arg=arg)))
   }
@@ -2204,92 +2831,89 @@ insert.dialog <- function(.local, row.idx=NULL, col.idx=NULL, insert.type ="Rows
   dialog$showAll()
 }    
 
+DeleteSelection <- function(.local){
+  selections <- .local$selections
+  if(length(selections)){
+    xors <- get.xor.selection(.local$selections)
+    # drop rows and cols that don't contain cells
+    xbb <- as.integer(c( 
+             rownames(xors)[c(1, nrow(xors))], 
+             colnames(xors)[c(1, ncol(xors))] ))
+    row.idx <- xbb[1]:xbb[2]
+    col.idx <- xbb[3]:xbb[4]+COLUMN_OFFSET
+    theSelection <- .local$theFrame[row.idx, 
+      col.idx, drop=FALSE]
+    theSelection[xors] <- NA
+    nf <- theSelection
+    task <- list(list(func="ChangeCells", 
+      arg = list(nf=nf, row.idx=row.idx, col.idx=col.idx)))
+    DoTaskWrapper(.local, task)
+  }
+}
+
+GetCursorRowColIdx <- function(widget){
+  cursor.info <- gtkTreeViewGetCursor(widget)
+  path <- cursor.info$path
+  if(is.null(path)) return(NULL)       
+  col.idx <- GetColIdx(cursor.info$focus.column)  
+  row.idx <- as.integer(gtkTreePathGetIndices(path))+1                
+  return(c(row.idx, col.idx))
+}
 
 ViewKeyPress <- function(widget, event, data) {
   .local <- data
   retval <- TRUE       
   event.time <- event[["time"]]
   keyval <- event[["keyval"]]
+  .local$last.view.event <- event
+  .local$last.key.pressed <- keyval
   
       # remove click info
   .local$last_click_info <- NULL
-
   #cat(c(".", "*")[.local$allow.key.flag+1])
-  #if( .local$allow.key.flag && event.time > .local$last.time){ #4-21-10
-  if( event.time > .local$last.time){  
+  if(0 && !is.null(.local$entry)) {
+   #print("ViewKeyPress unrealizing entry")
+  .local$entry$unrealize()
+  .local$entry <- NULL
+  }     
+
+  if(.local$allow.key.flag && event.time > .local$last.time && is.null(.local$entry)){ #4-21-10
+  #if( allow.key.flag && event.time > .local$last.time){  
 
 #  if(.local$allow.key.flag) if(!gtkWidgetIsFocus(.local$view)) { #added 4-21-2010
 #      print("ViewKeyPress: focus is FALSE")
 #     gtkWidgetGrabFocus(.local$toplevel)      
 #     gtkWidgetGrabFocus(.local$view)
 #  }  
+
   
-    #tryCatch({        
+    #tryCatch({
       .local$last.time <- event.time
       .local$allow.key.flag <- FALSE                            
-      stat <- as.flag(event[["state"]]) 
+      stat <- event[["state"]] 
   
       allColumns <- .local$allColumns
       view <- .local$view
       model <- .local$model
       
       # Paging events
-    if(keyval%in%c(GDK_Page_Up, GDK_Page_Down, GDK_Home, GDK_End)) {
-     if ( (gtkRangeGetValue(.local$vbar) == 0) ||
-        (gtkRangeGetValue(.local$vbar) == .local$va[["upper"]] - .local$va[["page_size"]]) ) 
-           .local$allow.key.flag <- TRUE
-        # Update the paint rectangle, and set a timeout if we're select-paging
-      if(stat==0)
-        .local$do.paint <- FALSE
-      else 
-        PaintSelectionOnTimeout(.local)
-      if(.local$do.paint){
-        .local$do.paint <- FALSE
-        .local$viewGetBinWindow$invalidateRect(NULL, FALSE)
-      }                
-      if(stat==0 && length(GetSelectedColumns(.local)) > 1){
-				cursor.info <- gtkTreeViewGetCursor(widget)
-				new.idx <- GetColIdx(cursor.info$focus.column)
-        UpdateColumnSelection(.local, new.idx)          
-      }
-      retval <- FALSE
-    } else if(CtrlLetter(keyval, stat, GDK_Up) || CtrlLetter(keyval, stat, GDK_Down)
-      || CtrlLetter(keyval, stat, GDK_Left) || CtrlLetter(keyval, stat, GDK_Right)) {
-      .local$allow.key.flag <- TRUE            
-      retval <- FALSE
-    } else if (ShiftLetter(keyval, stat, GDK_Up) || ShiftLetter(keyval, stat, GDK_Down)){
-      PaintSelectionOnTimeout(.local)
-      if(.local$do.paint){
-        .local$do.paint <- FALSE
-        .local$viewGetBinWindow$invalidateRect(NULL, FALSE)    
-      }
-      .local$allow.key.flag <- TRUE            
-      retval <- FALSE
-      #return(FALSE)                          
-    } else if (CtrlLetter(keyval, stat, GDK_c) || CtrlLetter(keyval, stat, GDK_C)) {
+    if (CtrlLetter(keyval, stat, GDK_c) || CtrlLetter(keyval, stat, GDK_C)) {
       namesflag <- CtrlLetter(keyval, stat, GDK_C)
+
       gsr <- GetSelectedRows(.local$view, .local)
      # block transient interactions with a popup
       w <- TransientWindow("Copying...", .local)
-      on.exit(w$destroy())          
-      if(!length(gsr) && dim(.local$theFrame)[1] > 1) gsr <- 1:(dim(.local$theFrame)[1]-1)
-      CopyToClipboard(.local$theFrame[gsr, GetSelectedColumns(.local)+COLUMN_OFFSET, drop=F], 
-        do.rownames=namesflag, do.colnames=namesflag)
+      on.exit(w$destroy())   
+      nf <- GetSelectedCells(.local)
+      if(!is.null(nf))
+        CopyToClipboard(nf, 
+        do.rownames=namesflag && !RowNamesAreNull(.local$theFrame), do.colnames=namesflag && !ColNamesAreNull(.local$theFrame))
       retval <- TRUE
       .local$allow.key.flag <- TRUE                          
       #return(TRUE)
-    } else if (CtrlLetter(keyval, stat, GDK_v)){
-      #print("Ctrl-v")
-      dat <- ReadFromClipboard(row.names=NULL, sep="\t", fill=TRUE, stringsAsFactors=F) # character vector
-      row.idx <- GetSelectedRows(.local$view, .local, restrict=FALSE)
-      sc <- GetSelectedColumns(.local, restrict=FALSE)
-      if(length(sc) == 0 && length(.local$allColumns) == 1) sc <- 1 # 
-      if(length(sc) && length(row.idx)){
-        col.idx <- min(sc)
-        row.idx <- row.idx[1]
-        task <- GetTaskPasteIn(.local$theFrame, dat, row.idx, col.idx+COLUMN_OFFSET)
-        DoTaskWrapper(.local, task)
-      }
+    } else if (CtrlLetter(keyval, stat, GDK_v) && .local$editable){
+      # print("Ctrl-v")
+      ReadFromClipboardWrapper(.local)
       retval <- TRUE      
       .local$allow.key.flag <- TRUE                          
       #return(TRUE)
@@ -2305,60 +2929,71 @@ ViewKeyPress <- function(widget, event, data) {
       .local$allow.key.flag <- TRUE        
       retval <- TRUE
       #return(TRUE)
-    } else if(keyval == GDK_Delete) {
-      row.idx <- GetSelectedRows(.local$view, .local)
-      col.idx <- GetSelectedColumns(.local) + COLUMN_OFFSET      
-      if(length(row.idx) == 0) row.idx <- 1:(dim(.local$theFrame)[1]-1)
-      if(length(row.idx)> 0 && length(col.idx) > 0){
-        nf <- .local$theFrame[row.idx, col.idx, drop=F]      
-        stopifnot(ncol(nf) > 0)  
-        nf[,] <- ""
-        task <- list(list(func="ChangeCells", 
-          arg = list(nf=nf, row.idx=row.idx, col.idx=col.idx)))
-        DoTaskWrapper(.local, task)
-      }
+    } else if(keyval == GDK_Delete  && .local$editable) {
+       # replace set of selection rectangles with disjoint
+       # rectangles in order to minimize paint/display properly
+      DeleteSelection(.local)
       .local$allow.key.flag <- TRUE                  
       retval <- TRUE      
       #return(TRUE)   
     } else if(keyval%in%myMetaKeys ||  (stat == GdkModifierType['control-mask'])){
-      if(keyval%in%myShiftKeys)
-        .local$start.key.column.select <- GetColIdx(widget$getCursor()$focus.column)
+       # start shift-selection if user pressed shift
+      if(keyval%in%myShiftKeys){
+        rc <- GetCursorRowColIdx(widget)
+        if(!is.null(rc)){
+        .local$selections <- list(list(start=c(row.idx=rc[1], col.idx=rc[2])))
+#print("Shift pressed")
+#print(unlist(.local$selections))
+        }
+      }
       .local$allow.key.flag <- TRUE                
       retval <- TRUE        
       #return(TRUE)
     } else if (keyval%in%myValidNavigationKeys){
-      .local$rectangles <- list()      
-      if (keyval == GDK_Up || ShiftLetter(keyval, stat, GDK_Return)) {
-        MoveCursor(widget, "up", .local, stat)
-        retval <- TRUE          
-      } else if (keyval == GDK_Down || keyval == GDK_Return) {
-        MoveCursor(widget, "down", .local, stat)
-        retval <- TRUE          
-      } else if(keyval == GDK_Right || keyval == GDK_Tab) {
-        MoveCursor(widget, "right", .local, stat)
-        retval <- TRUE          
-      } else if(keyval == GDK_Left || keyval == GDK_ISO_Left_Tab) {
-        MoveCursor(widget, "left", .local, stat)
-        retval <- TRUE          
+      #.local$rectangles <- list()      
+      if (keyval == GDK_Up || ShiftLetter(keyval, stat, GDK_Return))
+        moveDirection <- "up"
+      else if (keyval %in% c(GDK_Down, GDK_Return))
+        moveDirection <- "down"
+      else if(keyval %in% c(GDK_Right, GDK_Tab))
+        moveDirection <- "right"
+      else if(keyval %in% c(GDK_Left, GDK_ISO_Left_Tab))
+        moveDirection <- "left"
+      else if(keyval %in% c(GDK_Page_Down))
+        moveDirection <- "page_down"
+      else if(keyval %in% c(GDK_Page_Up))
+        moveDirection <- "page_up"
+      else if(keyval %in% c(GDK_Home))
+        moveDirection <- "home"
+      else if(keyval %in% c(GDK_End))
+        moveDirection <- "end"
+      else
+        moveDirection <- NULL
+
+      if(!is.null(moveDirection)){
+        MoveCursor(widget, moveDirection, .local, stat)
+        retval <- TRUE        
       } else {
         retval <- FALSE
       }
+
       .local$allow.key.flag <- TRUE                  
     } else if (keyval==GDK_Insert){
-        #print("Starting insert")
-        cursor.info <- gtkTreeViewGetCursor(widget)
-        path <- cursor.info$path          
-        col.idx <- GetColIdx(cursor.info$focus.column)
-        row.idx <- as.integer(gtkTreePathGetIndices(path))                
-        if(!is.null(path)){
-          insert.dialog(.local, row.idx, col.idx, insert.type="Rows", win=.local$toplevel)
+        if(.local$editable){
+		    #print("Starting insert")
+		    cursor.info <- gtkTreeViewGetCursor(widget)
+		    path <- cursor.info$path          
+		    col.idx <- GetColIdx(cursor.info$focus.column)
+		    row.idx <- as.integer(gtkTreePathGetIndices(path))                
+		    if(!is.null(path)){
+		      insert.dialog(.local, row.idx, col.idx, insert.type="Rows", win=.local$toplevel)
+		    }
         }
         .local$allow.key.flag <- TRUE           
         retval <- TRUE                   
     } else if (keyval == GDK_equal && length(sc <- GetSelectedColumns(.local))) {
-
       if(length(sr <- GetSelectedRows(.local$view, .local))==0) 
-          sr <- 1:(dim(.local$theFrame)[1]-1)
+          sr <- 1:(dim(.local$theFrame)[1]-EXTRA_ROW)
       CommandData(.local, sr, sc)
       .local$allow.key.flag <- TRUE        
       retvale <- TRUE
@@ -2370,14 +3005,24 @@ ViewKeyPress <- function(widget, event, data) {
       row.idx <- as.integer(gtkTreePathGetIndices(path))+1
       ddf <- dim(.local$theFrame)
         # ignore last row
-      if(row.idx > ddf[1]-1 || col.idx > ddf[2]-2) {
+      if(row.idx > ddf[1]-EXTRA_ROW || col.idx > ddf[2]-2) {
         .local$allow.key.flag <- TRUE        
         retval <- TRUE          
       } else {             
-        gtkTreeViewSetCursorOnCell(widget, cursor.info$path,
-           cursor.info$focus.column, renderer, TRUE)              
-        gtkPropagateEvent(view, event)
-        retval <- FALSE
+        if(.local$editable){
+           gtkTreeViewSetCursorOnCell(widget, cursor.info$path,
+             cursor.info$focus.column, renderer, TRUE)
+           if(keyval != GDK_space){
+             gtkPropagateEvent(view, event)
+           }
+         } else {
+           .local$allow.key.flag <- TRUE
+         }
+         retval <- FALSE
+           # Bug spotted by Liviu 28/9/12
+         if(keyval == GDK_space){
+           retval <- TRUE
+         }
       } # if row.idx
       #.local$allow.key.flag <- TRUE           
     }
@@ -2387,10 +3032,11 @@ ViewKeyPress <- function(widget, event, data) {
     #    .local$allow.key.flag <- TRUE
     #   }) # TryCatch       
   } else {# if allow.key.flag is false or event.time
+#print("ViewKeyPress Blocked")
   }
   if(!keyval%in%myValidKeys) { # otherwise bad things
     .local$allow.key.flag <- TRUE
-  }  
+  }
   
   return(retval)
 }
@@ -2402,39 +3048,55 @@ GetSelectedColumns <- function(.local, restrict=TRUE) {
 }
 
 RendererEditingStarted <- function(renderer, entry, path, data) {  
-  checkPtrType( entry, "GtkEntry")
-  col.idx <- data$col.idx 
   .local <- data$.local
+  #print(paste("RendererEditingStarted called, local key flag is", .local$allow.key.flag))
+
+  if(!is.null(.local$entry)) {
+    #cat ("Already using entry!!!\n")
+  }
+  .local$entry <- entry
+  checkPtrType(entry, "GtkEntry")
+  col.idx <- data$col.idx
   #print(entry)
-  if(!.local$do.rendererEditingStarted) return(FALSE)
-  
-#  frame_text <- as.character(.local$theFrame[as.integer(path)+1, col.idx])
-#  gtkEntrySetText(entry, frame_text)
-      
+
   theFrame <- .local$theFrame
   view <- .local$view
     # don't paint rectangles
   .local$do.paint <- FALSE
-  entry$setHasFrame(TRUE)
-  entry$modifyBase(as.integer(1), as.GdkColor("black"))  
-  entry$modifyBase(as.integer(3), as.GdkColor("black"))      
-  entry$modifyText(as.integer(1), as.GdkColor("white"))              
-  entry$modifyText(as.integer(3), as.GdkColor("white"))   
+  myBlack = as.GdkColor("black")
+  myWhite = as.GdkColor("white")
+  gtkEntrySetHasFrame(entry, TRUE)
+  gtkWidgetModifyBase(entry, as.integer(1), myBlack)  
+  gtkWidgetModifyBase(entry, as.integer(3), myBlack)      
+  gtkWidgetModifyText(entry, as.integer(1), myWhite)              
+  gtkWidgetModifyText(entry, as.integer(3), myWhite)   
             
-  entry$setAlignment(1)
+  #entry$setAlignment(1)
   
-  entry$setEvents(GdkEventMask["all-events-mask"])	  	  
-  
+  gtkWidgetSetEvents(entry, GdkEventMask["all-events-mask"])	  	  
   gObjectSetData(entry, "index", col.idx)
   gObjectSetData(entry, "renderer", renderer)
   gObjectSetData(entry, "path.str", path)
   gObjectSetData(entry, "path", gtkTreePathNewFromString(path))
   gObjectSetData(entry, "text", gtkEntryGetText(entry))    
-  .local$entry <- entry
-    
+
+   # if the used pressed space, we want to insert it the normal way
+   # this is surprisingly hard to do with a treeview...
+   # However we could probably avoid the propagate call
+   # this way!
+  if(identical(.local$last.key.pressed, GDK_space))
+   gSignalConnect(entry, "map-event", 
+     function(entry, event, data=.local) {
+       entry$setText(" ")
+       #entry$setText(.local$last.key.pressed)
+       gtkEditableSelectRegion(entry, 1, 1)
+       })
+
   # Insert cursor at point where we clicked
-  if(0) if(!is.null(.local$last_click_info)) gSignalConnect(entry, "map-event", function(entry, event, data=.local){ 
-    print("A")
+  gSignalConnect(entry, "map-event", function(entry, event, data=.local){
+#print("RendererEditingStarted: map-event insert") 
+   # This denies focus to the entry
+if(0){
     insertion_point <- 0
     pixel_size <- entry$getLayout()$getPixelSize()
     click_info <- .local$last_click_info
@@ -2444,6 +3106,9 @@ RendererEditingStarted <- function(renderer, entry, path, data) {
     if(length(text_pos) != 1 || text_pos < 0 || text_pos > 1) text_pos <- 0
     insertion_point <- round(text_pos*nchar(entry$getText()))   
     gtkEditableSelectRegion(entry, insertion_point, insertion_point)
+}
+
+#print("RendererEditingStarted: map-event insert returning")
     return(FALSE)  
  })
   # 7-4-10 - disable right-click menu, seems to confuse people
@@ -2451,27 +3116,35 @@ RendererEditingStarted <- function(renderer, entry, path, data) {
     if(event[["button"]] == as.integer(3)) return(TRUE)
     return(FALSE)
   }
+
+  if(1) gSignalConnect(entry, "focus-in-event", function(entry, event) {
+    #print("RendererEditingStarted: entry focused in")
+    return(FALSE)
+  })
+
   gSignalConnect(entry, "button-press-event", IgnoreRClick)
   gSignalConnect(entry, "button-release-event", IgnoreRClick)  
     # We've trapped the temporary GtkEntry the renderer creates.
   gSignalConnect(entry, "key-press-event", RendererEntryKeyPress, data=.local)
     # you can leave the entry in 2 ways, focusing out or pressing a key from within
-  gSignalConnect(entry, "focus-out-event", function(entry, event){
-    if(!identical(.local$ignore_entry_focus_out, NULL)) {
-      .local$ignore_entry_focus_out <- NULL
-      return(FALSE)
-    }
-    .local$ignore_entry_focus_out <- TRUE
-    gtkPropagateEvent(entry, event)            
+  .local$entry.focus.out <- gSignalConnect(entry, "unrealize", function(entry, ...){
+    #print("RendererEditingStarted: entry focused out")
+    #if(!identical(.local$ignore_entry_focus_out, NULL)) {
+    #  .local$ignore_entry_focus_out <- NULL
+    #  return(FALSE)
+    #}
+    #.local$ignore_entry_focus_out <- TRUE
+    #gtkPropagateEvent(entry, event)           
     EnterTextIntoCell(entry, .local)    
     #print(.local$entry)
-    #print("Entry focus out returning")  
     .local$allow.key.flag <- TRUE # unlock
     .local$entry <- NULL                 
       # changed 082210
+    .local$entry.focus.out <- NULL
+    #print("RendererEditingStarted: unlocked from focus-out")
+
     return(FALSE)
   }) # focus out event
-  
   
  .local$doingEntryIntoCompletion <- FALSE  
  typ <- GetClasses(.local$theFrame)[col.idx]
@@ -2484,72 +3157,68 @@ RendererEditingStarted <- function(renderer, entry, path, data) {
    factor.levels <- levels(theFrame[,col.idx])
    completion <- gtkEntryCompletionNew()
      # Assign the completion to the entry
-   entry$setCompletion(completion)
  
      # Create a tree model and use it as the completion model
    completion.model <- create.completion.model(factor.levels)
    entry$setData("levels", factor.levels)    
    completion$setModel(completion.model)
    completion$setTextColumn(0)
-   #completion$setMinimumKeyLength(0)
+   completion$setMinimumKeyLength(0)
    completion$setInlineCompletion(TRUE)
    completion$setPopupSingleMatch(FALSE)
    .local$doingEntryIntoCompletion <- TRUE
      # move cursor down if you hit return after you select a match
         
-   gSignalConnect(completion, "match-selected", after=T, function(widget, completion.model, iter){
-     #print("match selected")
+   gSignalConnect(completion, "match-selected", after=F, function(widget, completion.model, iter){
      #entry$setText(gtkTreeModelGetValue(completion.model, iter, 0)$value)
-     EnterTextIntoCell(entry, .local)    
+#print("RendererEditingStarted: Focused out via match-selection")
+     EnterTextIntoCell(entry, .local)
      MoveCursor(.local$view, "down", .local)
      return(FALSE)
    })
+  entry$setCompletion(completion)
   entry$setData("completion", completion)
+
   entry$setData("pos", 0)  # match position
+
   entry$setData("current.match", character(0))  
   }
+  #print("RendererEditingStarted returning")
+
   return(FALSE)
 }
 
 EnterTextIntoCell <- function(entry, .local){
-  w <- TransientWindow("", .local)  
-  on.exit(w$destroy())  
-
-  #print("e-out")
-  #print(gObjectGetData(entry, "text"))
-  if(gObjectGetData(entry, "text") != gtkEntryGetText(entry)){
-    #tryCatch({
-  	  col.idx <- entry$getData("index")  
-  	  row.idx <- as.integer(entry$getData("path.str"))+1      
-      keyval <- entry$getData("keyval")
-      theText <- entry$getText()          
-      nf <- data.frame(theText, stringsAsFactors=F)
-      task <- list(list(func="ChangeCells", 
-        arg = list(nf=nf, row.idx=row.idx, col.idx=col.idx)))
-      DoTaskWrapper(.local, task)
-    #}, error = function(e) warning(e) )
-    #if(.local$doingEntryIntoCompletion){ #we're entering data into a factor 
-    #    if (keyval == GDK_Return)
-    #       MoveCursor(view, "down", .local)
-    #}        
-  } 
+  #w <- TransientWindow("Updating...", .local)  
+  #on.exit(w$destroy())
+#print("EnterTextIntoCell entered")
+  col.idx <- gObjectGetData(entry,"index")  
+  row.idx <- as.integer(gObjectGetData(entry, "path.str"))+1      
+  keyval <- gObjectGetData(entry,"keyval")
+  #} else {
+    theText <- gtkEntryGetText(entry)          
+  #}
+#print(c("theText", theText))
+  nf <- data.frame(theText, stringsAsFactors=F, check.names=F)
+  task <- list(list(func="ChangeCells", 
+    arg = list(nf=nf, row.idx=row.idx, col.idx=col.idx)))
+  DoTaskWrapper(.local, task)
+#print("EnterTextIntoCell returning")
 }
-  
 
 RendererEntryKeyPress <- function(entry, event, data) {
   .local <- data
-  #print("RendererEntryKeyPress called")
   retval <- TRUE    
   event.time <- event[["time"]]
-  keyval <- event[["keyval"]] 
+  keyval <- event[["keyval"]]
   #cat(c("A", "B")[.local$allow.renderer.key.flag+1])
   if(1){# .local$allow.renderer.key.flag && event.time >= .local$last.time){
     .local$last.time <- event.time
     retval <- FALSE
     keyval <- event[["keyval"]]
     stat <- as.flag(event[["state"]])
-    entry$setData("keyval", keyval)
-  	entry$setData("stat", stat)
+    gObjectSetData(entry, "keyval", keyval)
+  	gObjectSetData(entry,"stat", stat)
   	
     view <- .local$view
       # control keys for popup selection
@@ -2565,7 +3234,8 @@ RendererEntryKeyPress <- function(entry, event, data) {
         if(nchar(entry$getText()) > 0) {  
           #EnterTextIntoCell(entry, .local)  
           #.local$allow.key.flag <- TRUE # unlock
-          #.local$entry <- NULL                      
+          #.local$entry <- NULL
+#print("RendererEntryKeyPress, returning on completion")                
           MoveCursor(view, "down", .local)
         } 
         
@@ -2573,9 +3243,9 @@ RendererEntryKeyPress <- function(entry, event, data) {
        #.local$entry <- NULL              
         #
         retval <- FALSE
-      } else if( 0 && keyval == GDK_Escape){
-        entry$setText(entry$getData("text"))
-        MoveCursor(view, "down", .local)
+      } else if(0 && keyval == GDK_Escape){
+        #entry$setText(entry$getData("text"))
+        #MoveCursor(view, "down", .local)
         retval <- TRUE
       }
         # Keep track of entry completion
@@ -2598,28 +3268,35 @@ RendererEntryKeyPress <- function(entry, event, data) {
         entry$setData("pos", xx)
         entry$setData("current.match", matches[xx])
       }
-            
+      # just a regular text cell
+      # calling MoveCursor ends the focus of the entry
     }  else if (!keyval%in%myValidInputKeys && !keyval%in%myMetaKeys){  
-    #print("Exiting")
       # EnterTextIntoCell(entry, .local)  # update the cell
       # .local$allow.key.flag <- TRUE # unlock
-      # .local$entry <- NULL      
-      if (keyval == GDK_Up || ShiftLetter(keyval, stat, GDK_Return)){
+      # .local$entry <- NULL
+ 
+      if (keyval == GDK_Escape){
+        gtkEntrySetText(entry, gObjectGetData(entry, "text"))   
+      } else if (keyval == GDK_Up || ShiftLetter(keyval, stat, GDK_Return)){
         MoveCursor(view, "up", .local)
-      } else if (keyval == GDK_Down || keyval == GDK_Return) {
+      } else if ( keyval == GDK_Return || keyval == GDK_Down ) {
         MoveCursor(view, "down", .local)
-      } else if (keyval == GDK_Left || keyval == GDK_ISO_Left_Tab) {
+      }  else if (keyval == GDK_Left || keyval == GDK_ISO_Left_Tab) {
         MoveCursor(view, "left", .local)
       } else if (keyval == GDK_Right || keyval == GDK_Tab) {
         MoveCursor(view, "right", .local)
-      }
+      } 
       retval <- FALSE
+    } else { # not entry into completion, or invalid keys
     }
-    if(keyval%in%myMetaKeys)
+
+    if(keyval%in%myMetaKeys) # ignore these
       retval <- TRUE
   } 
-  #print(paste("RendererEntryKeyPress returning", retval)) 
-  #print(paste("key flag is", .local$allow.key.flag)     )
+
+  # new code here  
+  #print("RendererEntryKeyPress setting flag to TRUE")
+  #.local$allow.key.flag <- TRUE
   #print(.local$view$isFocus()) # Here's the problem....
   return(retval)
 }
@@ -2664,7 +3341,11 @@ SelectAll <- function(.local){
   w <- TransientWindow("Selecting...", .local)
   on.exit(w$destroy())
   
-  gtkTreeSelectionSelectAll(gtkTreeViewGetSelection(.local$view))    
+  #gtkTreeSelectionSelectAll(gtkTreeViewGetSelection(.local$view))    
+  .local$selections <- list(list(
+     start=c(row.idx=1, col.idx=1),
+     end=c(row.idx=nrow(.local$theFrame), col.idx=ncol(.local$theFrame)-2)
+     )) 
   UpdateSelectionRectangle(.local)      
 }
 
@@ -2677,18 +3358,97 @@ RowNamesButtonPress <- function(widget, event, data) {
   if(is.null(info$path)) return(TRUE)         
 
   row.idx <- info$path$getIndices()+1
-            
-  UpdateColumnSelection(.local, integer(0))
+  col.idx <- 1
+        
+  allColumns <- .local$allColumns
+
+  #UpdateColumnSelection(.local, 1:(length(allColumns)))
+  .local$do.paint <- TRUE
+    
+  #UpdateColumnSelection(.local, integer(0))
   #if(length(.local$rectangles)){
   #  .local$rectangles <- list()
   #  .local$viewGetBinWindow$invalidateRect(NULL, FALSE)             
   #}
+
+  if (.local$scrollRowNames) # i.e., we're not propagating event
   if (event[["button"]] == as.integer(1)){
-    if(row.idx > dim(.local$theFrame)[1]-1) return(TRUE)
+    if(row.idx > dim(.local$theFrame)[1]-EXTRA_ROW) return(TRUE)
     if(typ == as.integer(4)){ # single clicked     
+    selections <- .local$selections
+
+  #if(0){
+   theFrameNCols <- ncol(.local$theFrame)-1-COLUMN_OFFSET
+   rowSel <- list(start=c(row.idx=row.idx, col.idx=1),
+        end=c(row.idx=row.idx, col.idx=theFrameNCols))
+
+   # selectedRows <- GetSelectedRows(.local)  	
+   if (as.flag(stat) & GdkModifierType['shift-mask']) { # range
+    if(is.null(selections) || !length(selections))
+      selections <- list(list(start=rowSel$start))
+    # For the tricky case where we've selected a cell range
+    # and shift-click - unsure of best behavior here
+    selections[[length(selections)]]$start['col.idx'] <- 1
+    selections[[length(selections)]]$end <- rowSel$end
+
+  } else if (as.flag(stat) & GdkModifierType['control-mask']) { # range
+    # Simpler: Just add the column to whatever you clicked.
+    selections <- .local$selections
+
+    if(length(selections)){
+      xors <- get.xor.selection(selections)
+      airx <- as.integer(rownames(xors))
+      selectedRows <- airx[rowSums(xors)>0]
+        # if the column index is not in the range 
+        # of selected columns,
+        # we want to add it
+      whichidx <- which(airx==row.idx)
+      # if the entire column is already selected and TRUE
+      # then set it to FALSE 
+      if(row.idx%in%selectedRows){
+        #dont.add.flag <- TRUE
+        if(all(xors[whichidx,])
+          && ncol(xors)==theFrameNCols){
+          xors[whichidx,] <- FALSE
+          selections <- get.xor.rectangles(xors)
+        } else {
+          xors[whichidx,] <- FALSE
+          selections <- get.xor.rectangles(xors)
+          selections[[length(selections)+1]] <- rowSel
+        }
+      # otherwise set the whole column to TRUE
+      } else {
+         selections[[length(selections)+1]] <- rowSel
+      }
+    # if length(selections)
+    } else {
+       selections[[length(selections)+1]] <- rowSel
+    }
+
+  } else {
+    gtkTreeSelectionUnselectAll(.local$ss)    
+    selections <- list()
+    selections[[length(selections)+1]] <- rowSel
+ }
+ .local$selections <- selections
+  #} # if 0
+  .local$do.paint <- TRUE
+
+    UpdateSelectionRectangle(.local)
+    gdkWindowInvalidateRect(.local$viewGetBinWindow, NULL, FALSE)
+    #gdkWindowInvalidateRect(.local$view.rnGetBinWindow, NULL, FALSE)
+
+
+    # prevent a repeated click from editing
+	  cursor.info <- gtkTreeViewGetCursor(widget)
+      if(is.null(cursor.info$path))
+        return(FALSE)
+
+	  cursor.row.idx <- as.integer(gtkTreePathGetIndices(cursor.info$path))+1
+      if(identical(cursor.row.idx, row.idx))
+        return(TRUE)
 
     DoUserCall("RowClicked", list(idx = info$path$getIndices()+1), .local)
-    DoUserCall("Selection", list(row.idx=info$path$getIndices()+1, col.idx=1:(dim(.local$theFrame)[2]-2)), .local)    
 
      # scroll main view in sync
     if( .local$scrollRowNames) { 
@@ -2708,22 +3468,123 @@ RowNamesButtonPress <- function(widget, event, data) {
     gtkMenuPopupHack(m, button = event$GetButton(), 
       activate.time = gdkEventGetTime(event))
     return(TRUE)
-  }    
+  } 
   return(FALSE)
 }
 
+
+# given the selection, creates a bounding box mask 041210
+get.xor.selection <- function(selections){
+	mtx <- apply(as.data.frame(selections), 1, range)
+  stopifnot(nrow(mtx)==2 && ncol(mtx)> 0 && ncol(mtx)%%2==0)
+	ary <- array(FALSE, apply(mtx, 2, diff)+1)
+	msq <- function(xc) {xc <- unlist(xc); seq.int(from=xc[1], to=xc[2])}
+	dimnames(ary) <- list(msq(mtx[,1]), msq(mtx[,2]))
+	for(ii in seq(length=length(selections))){
+		x1 = as.data.frame(selections[[ii]])
+		x1.idx <- x1 - mtx[1,] + 1
+    if(!(nrow(x1.idx)==2 && ncol(x1.idx)==2)) break;
+		sii <- msq(x1.idx[1,])
+		sjj <- msq(x1.idx[2,])
+		ary[sii, sjj] <- !ary[sii, sjj]
+	}
+	return(ary)
+}
+
+get.xor.rectangles <- function(xors){
+	rects = list()
+
+    row.offset <- as.integer(rownames(xors)[1])-1
+    names(row.offset)<-NULL
+    col.offset <- as.integer(colnames(xors)[1])-1
+    names(col.offset)<-NULL
+	while(any(xors)){
+	wxors <- which(xors, arr.ind=T)
+	  # get first element which isn't in first row containing true
+	top.row = wxors[1,1]
+	left.col = wxors[1,2]
+
+	first.col.containing.true <-  xors[top.row:nrow(xors),left.col]
+
+	row.height <- which(diff(first.col.containing.true)!=0)[1]
+    if(is.na(row.height)) row.height <- length(first.col.containing.true)
+    bottom.row <- top.row+row.height-1
+
+	xx <- colSums(!xors[top.row:bottom.row,,drop=F])
+
+	right.col <- which(xx[-(1:left.col)]!=0)[1] + left.col-1
+	if(is.na(right.col)) right.col <- length(xx)
+	stopifnot(all(xors[top.row:bottom.row, left.col:right.col]))
+	xors[top.row:bottom.row, left.col:right.col] <- FALSE
+
+    names(top.row) <- names(left.col) <- names(bottom.row) <- names(right.col) <- NULL
+
+	rects[[length(rects)+1]] <- list(
+		 start = c(row.idx=top.row+row.offset, 
+                  col.idx=left.col+col.offset),
+		 end = c(row.idx=bottom.row+row.offset, 
+                col.idx=right.col+col.offset)
+	  )
+#print("A")
+#print(rects[[length(rects)]])
+#print("B")
+	}
+
+return(rects)
+}
+
+# Takes selections as xor-ing one another
+# Return selection list, i.e. list of start, end row.idx col.idx
+GetSelectedCells <- function(.local){
+   # replace set of selection rectangles with disjoint
+   # rectangles in order to minimize paint/display properly
+  selections <- .local$selections
+  if(length(selections)){
+    xors <- get.xor.selection(.local$selections)
+    # drop rows and cols that don't contain cells
+    xbb <- as.integer(c( 
+             rownames(xors)[c(1, nrow(xors))], 
+             colnames(xors)[c(1, ncol(xors))] ))
+    wxx <- xbb[3:4] == ncol(.local$theFrame)-1
+    theSelection <- NULL
+    if(!all(wxx)){
+      xbb[3:4][wxx] <- ncol(.local$theFrame)-2
+      theSelection <- .local$theFrame[xbb[1]:xbb[2], 
+        xbb[3]:xbb[4]+COLUMN_OFFSET, drop=FALSE]
+        # remove entirely unselected rows and columns
+      if(any(rowSums(xors)==0)){
+        theSelection <- theSelection[rowSums(xors)!=0,,drop=F]
+        xors <- xors[rowSums(xors)!=0,,drop=F]
+      }
+      if(any(colSums(xors)==0)){
+        theSelection <- theSelection[,colSums(xors)!=0,drop=F]
+        xors <- xors[,colSums(xors)!=0,drop=F]
+      }
+      if(!all(xors)){
+        theSelection[!xors] <- NA
+      }
+    }
+  }
+  return(theSelection)
+}
+
 ViewButtonPress <- function(widget, event, data) {
+
   .local <- data
+  .local$last.view.event <- event
   model <- .local$model
 
   allColumns <- .local$allColumns
+
   info <- widget$getPathAtPos(event[["x"]], event[["y"]])
+
+  if (is.null(info$column)) return(FALSE)
+
   renderer <- info$column$getCellRenderers()[[1]]
 
     # store last click info here
   .local$last_click_info <- info
   
-
   if(is.null(info$path)) return(TRUE)
   row.idx <- info$path$getIndices()+1
   col.idx <- GetColIdx(info$column)
@@ -2743,33 +3604,92 @@ ViewButtonPress <- function(widget, event, data) {
         .local$rectangles <- list()
         return(FALSE)
       }
+
+        # if it isn't editable, 
+        # make sure we don't drop into edit mode
+	  if(!.local$editable) {
+		  cursor.info <- gtkTreeViewGetCursor(widget)
+		  path <- cursor.info$path
+		  if(is.null(path)){
+			cursor.row.idx = 1
+			cursor.col.idx = 2
+		  } else {
+			cursor.row.idx <- as.integer(gtkTreePathGetIndices(path))+1
+			cursor.col.idx <- GetColIdx(cursor.info$focus.column)  
+		  }
+	      if(identical(cursor.row.idx, row.idx) && identical(col.idx, cursor.col.idx)){
+  	        return(TRUE)
+          }
+	  }
         
       selectedColumns <- GetSelectedColumns(.local)
       if (as.flag(stat) & GdkModifierType['shift-mask']) { # range
         if(is.null(.local$start.column.select)) .local$start.column.select <- col.idx
-        selectedColumns <- .local$start.column.select:col.idx          
-      } else {      
+        selectedColumns <- .local$start.column.select:col.idx
+    
+       if(is.null(.local$selections)) return(TRUE)
+       stopifnot(length(.local$selections[[length(.local$selections)]])>0)
+       .local$selections[[length(.local$selections)]]$end <- 
+          c(row.idx=row.idx, col.idx=col.idx)
+
+          # If SHIFT is held down and no start is selected, do nothing
+        if(is.null(.local$start.column.select)) {
+          return(TRUE)
+#          .local$selections <- list()
+#          .local$selections[[length(.local$selections)+1]] <- 
+#            list(start=c(row=row.idx, col=col.idx))
+       }
+
+
+	   } else if (as.flag(stat) & GdkModifierType['control-mask']) { # range
+         #cursor.row.idx <- as.integer(gtkTreePathGetIndices(path))+1
+		 selectedColumns <- union(selectedColumns, col.idx)
+		 #selectedColumns <-
+		 # c(union, setdiff)[[(col.idx%in%selectedColumns+COLUMN_OFFSET)]](selectedColumns, col.idx)
+         if(is.null(.local$start.column.select)) 
+           .local$start.column.select <- col.idx
+          # Treat ctrl-button down as starting a new selection range
+        .local$selections[[length(.local$selections)+1]] <- list(start=
+           c(row.idx=row.idx, col.idx=col.idx))
+
+        return(TRUE)
+      } else { # no control or shift
          selectedColumns <- col.idx
         .local$start.column.select <- col.idx
-        gsr <- GetSelectedRows(.local$view, .local)      
-        gsc <- GetSelectedColumns(.local)
-                 
-        if(length(gsr) && length(gsc) && gsr[1] == row.idx && (length(gsr) > 1 || length(gsc) > 1 || col.idx != gsc) ) {
-                  
+
+        .local$selections <- list()
+        .local$selections[[1]] <- list()
+        .local$selections[[1]]$start <- c(row.idx=row.idx, col.idx=col.idx)
+
+        #gsr <- GetSelectedRows(.local$view, .local)      
+       gsc <- GetSelectedColumns(.local)
+
+         # This is to prevent clicking twice on the same row from opening
+         # an edit entry in a different cell
+#        if(length(gsr) && length(gsc) && gsr[1] == row.idx && (length(gsr) > 1 || length(gsc) > 1 || col.idx != gsc) ) {
+
+        # if you've clicked twice on a selected cell, 
+        # ignore it
+        # Test whether the first selected row is equal to the row index
+
+      mysr <- gtkTreeSelectionGetSelectedRows(.local$ss)$retval 
+      if(length(mysr)){
+        first.row.idx <- gtkTreePathGetIndices(mysr[[1]])+1
+        if(identical(first.row.idx, row.idx) && 
+         !(col.idx%in%gsc) ) {
+
           if(!is.null(.local$entry)) {
             .local$entry$unrealize()
             .local$entry <- NULL
           }     
           .local$do.paint <- TRUE          
           .local$rectangles <- list()          
-#          if(1 || length(gsr) > 1) { # if there's a block of selected cells, set to one row
-#             cat("*")           
-             .local$view$setCursorOnCell(info$path, info$column, renderer, FALSE)                                            
-#          }
+          .local$view$setCursorOnCell(info$path, info$column, renderer, FALSE)                                            
           UpdateColumnSelection(.local, selectedColumns)                     
-          UpdateSelectionRectangle(.local)                     
+          UpdateSelectionRectangle(.local)           
           return(TRUE)               
         }
+       }
       }
       UpdateColumnSelection(.local, selectedColumns) 
     }  else if (typ == as.integer(5)) { # ignore dclick
@@ -2778,116 +3698,212 @@ ViewButtonPress <- function(widget, event, data) {
    }
    
    ddf <- dim(.local$theFrame)
-     # disable input for last row and column without killing the cursor
-   if (row.idx > ddf[1]-1 || col.idx == ddf[2]-1){
-     .local$rectangles <- list()      
-     force.reset.focus(.local)     
-     #.local$view$setCursorOnCell(info$path, info$column, renderer, TRUE)       
-     .local$view$setCursorOnCell(info$path, info$column, renderer, FALSE)       
-     return(TRUE)
-   }
-
     # reset the cursor so it's visible  
-  .local$flash.cursor <- TRUE
+  #.local$flash.cursor <- TRUE
     #  Flash the rectangles off when you click
   .local$do.paint <- TRUE        # 2-12-10
   if(length(.local$rectangles)){
 #  print("resetting") 
-    .local$rectangles <- list() # 3-2-10
-	  widget$getBinWindow()$invalidateRect(NULL, FALSE)
+    #.local$rectangles <- list() # 3-2-10
+	widget$getBinWindow()$invalidateRect(NULL, FALSE) # 041012
   }
-#print("Exiting ViewButtonPress")
   return(FALSE)
 }
 
 # Update rectangle from .local$view selected rows.
 # Don't draw if only 1 selected square
 # Don't update if nothing changed.
-UpdateSelectionRectangle <- function(.local){
-  widget <- .local$view
-  gsr <- widget$getSelection()$getSelectedRows()$retval      	
-  #gsr <- GetSelectedRows(.local$view, .local)
+UpdateSelectionRectangle <- function(.local, selection=NULL, widget=.local$view){
   allColumns <- .local$allColumns
   sw.va <- .local$sw.view.va
-	selectedColumns <- GetSelectedColumns(.local) 
+  ncolmax <- ncol(.local$theFrame)
+  
   path2.index <- path1.index <- integer(0)
   
-  
-  if(length(selectedColumns) && length(gsr)){
-  	path1 <- gsr[[1]]
-  	path2 <- gsr[[length(gsr)]]
-  	path1.index <- path1$GetIndices()+1
-  	path2.index <- path2$GetIndices()+1
-  	if(length(path2.index) != 1 || length(path1.index) != 1){
-  	  warning("path1 or path2 are length zero")
-  	  return(FALSE)
-  	}
+  row.idx <- col.idx <- NULL
 
-    if(path2.index == dim(.local$theFrame)[1]) {
-      if(path1.index == path2.index) return(FALSE)
-      path2$prev()
+  selections <- .local$selections
+
+  t.cols <- integer(0)
+  t.rows <- integer(0)
+
+  if(length(selections) > 1){
+    xors <- get.xor.selection(.local$selections)
+    selections <- get.xor.rectangles(xors)
+    t.rows <- as.integer(rownames(xors)[rowSums(xors)>0])
+    t.cols <- as.integer(colnames(xors)[colSums(xors)>0])
+  } else if (length(selections) == 1) {
+    ls1 <- .local$selections[[1]]
+    t.seq <- sort(c(ls1$start['row.idx'], ls1$end['row.idx']))
+    t.from <- t.seq[1]
+    t.to <- t.seq[2]
+    if(!is.na(t.from) && !is.na(t.to)){
+      t.rows <- seq(from=t.from, to=t.to)
+      t.cols <- seq(from=.local$selections[[1]]$start['col.idx'],
+        to =.local$selections[[1]]$end['col.idx'])
     }
-  	
-  	currentVadj <- sw.va$getValue() # this gets called *before* value-changed
-	  rect1 <- widget$getCellArea(path1, allColumns[[selectedColumns[1]]]$column)$rect
-	  rect1$y <- rect1$y + currentVadj
-	  rect2 <- widget$getCellArea(path2, 
-      allColumns[[selectedColumns[length(selectedColumns)]]]$column)$rect
-	  rect2$y <- rect2$y + currentVadj
-	  .local$rectangles[[length(.local$rectangles)+1]] <- 
-        gdkRectangleUnion(rect1, rect2)$dest
-  	  # contiguous
-  	  # we need this in windows but not osx or linux    
-  } else {
-	  .local$rectangles <- list()
   }
 
-  if(!length(path1.index) || !length(path2.index)) {
-     row.idx <- integer(0)
-  } else {
-     row.idx <- path1.index:path2.index
-  }  
+  UpdateColumnSelection(.local, t.cols)
 
-  DoUserCall("Selection", list(row.idx=row.idx, col.idx=selectedColumns-COLUMN_OFFSET), .local)    
+    # row name rectangles
+  if(0 && length(t.rows)){
+    view.rn <- .local$view.rn
+    va.value <- gtkAdjustmentGetValue(.local$sw.view.va)
+    t.blocks <- MergeAdjacent(t.rows)-1
+    rn.rectangles <- vector("list", nrow(t.blocks))
+	  rn.col <- .local$rowname.column.obj$column
+    for(ii in seq(length=nrow(t.blocks))){
+	    path.start <-  gtkTreePathNewFromString(t.blocks[ii,1])
+	    path.end <-  
+        gtkTreePathNewFromString(t.blocks[ii,2])
+  	  rn.rect.start <- 
+        gtkTreeViewGetCellArea(view.rn, path.start, rn.col)$rect
+  	  rn.rect.end <- 
+        gtkTreeViewGetCellArea(view.rn, path.end, rn.col)$rect
+	    rn.rect <- gdkRectangleUnion(rn.rect.start, rn.rect.end)$dest
+	    rn.rect$y <- rn.rect$y + va.value # adjust for scroll
+	    rn.rectangles[[ii]] <- rn.rect
+    }
+    .local$rn.rectangles <- rn.rectangles
+  }
+
+  if(length(selections)){
+    va.value <- gtkAdjustmentGetValue(.local$sw.view.va)
+    view <- .local$view 
+    rectangles <- list()
+	  for(ii in seq.int(length.out=length(selections))){
+      sel.rect <- selections[[ii]]
+      if(length(sel.rect$start) < 2 || length(sel.rect$end) < 2) break;
+    row.block <- sort(c(sel.rect$start['row.idx'], sel.rect$end['row.idx']))
+	  row.block.start <- row.block[1]
+	  path.start <-  gtkTreePathNewFromString(row.block.start-1)
+
+	  row.block.end <- row.block[2] 
+    if(row.block.start == row.block.end)
+      path.end <- path.start
+    else
+	    path.end <-  gtkTreePathNewFromString(row.block.end-1)
+
+    col.block <- sort(c(sel.rect$start['col.idx'], sel.rect$end['col.idx']))
+	  col.block.start <- col.block[1]
+	  col.start <- allColumns[[col.block.start]]$column
+	  rect <- gtkTreeViewGetCellArea(view, path.start, col.start)$rect
+
+  	col.block.end <- col.block[2] 
+    if(col.block.start != col.block.end || row.block.end != row.block.start){
+  	  col.end <- allColumns[[col.block.end]]$column
+  	  rect.end <- gtkTreeViewGetCellArea(view, path.end, col.end)$rect
+  	  rect <- gdkRectangleUnion(rect, rect.end)$dest
+    }
+	  rect$y <- rect$y + va.value # adjust for scroll
+	  rectangles[[length(rectangles) + 1]] <- rect
+	}
+	.local$rectangles <- rectangles        
+
+  } else { # if length(...)
+	  .local$rectangles <- list()    
+  }
+
+  DoUserCall("Selection", list(selections=selections), .local)
       
-	widget$getBinWindow()$invalidateRect(NULL, FALSE)
+  gdkWindowInvalidateRect(.local$viewGetBinWindow, NULL, FALSE)      
   return(FALSE)   
 }  
 
 ViewButtonRelease <- function(widget, event, data){
   #if(.local$do.rendererEditingStarted){ # if we've started editing, don't do anything
   .local <- data
-  if(1 || is.null(.local$entry)){
+  .local$last.view.event <- event
+  typ <- event[['type']]
+  stat <- event[['state']]
+  row.idx <- col.idx <- integer(0)
+    # ignore this if there's an entry in progress
+  if(is.null(.local$entry)){ # 041012 removed (if (1 || is.null ...
     allColumns <- .local$allColumns
     sw.va <- .local$sw.view.va
-        
     info <- widget$getPathAtPos(event$x, event$y)
     selectedColumns <- GetSelectedColumns(.local)
-    col.idx <- GetColIdx(info$column)
-    
-      # Guess which way the user's gone outside the columns
-    if(!length(col.idx)){      
+
+      # This block deals with dragging outside the view rectangle
+    if(is.null(info$column) || is.null(info$path)){
       view <- .local$view
-      sw.ha <- .local$sw.ha
       ptr <- view$getBinWindow()$getPointer()
       vr <- view$getVisibleRect()$visible.rect
-      sw.ha.value <- sw.ha$value
-      direction <- ifelse (ptr$x - sw.ha.value <= vr$width/2, -1, 1)
-      if(direction == 1) col.idx <- length(allColumns)
-      if(direction == -1) col.idx <- 1
+
+      if(is.null(info$column))
+        info$column <- widget$getPathAtPos(event$x, 0)$column
+		  if(is.null(info$column)){
+		    sw.ha <- .local$sw.ha
+		    sw.ha.value <- sw.ha$value
+		    direction <- ifelse (ptr$x - sw.ha.value <= vr$width/2, -1, 1)
+		    if(direction == 1) col.idx <- length(allColumns)
+		    if(direction == -1) col.idx <- 1
+		  } else {
+		    col.idx <- GetColIdx(info$column)
+		  }
+
+    if(is.null(info$path)){
+      if(ptr$y < 0) ptr$y <- 0
+      info$path <- widget$getPathAtPos(0, ptr$y)$path
     }
+
+    if(is.null(info$path)) { # 
+      sw.va <- .local$sw.view.va
+      sw.va.value <- sw.va$value
+      direction <- ifelse (sw.va$value+ptr$y <= vr$height/2, -1, 1)
+      if(direction == 1) row.idx <- nrow(.local$theFrame)
+      if(direction == -1) row.idx <- 1
+    } else {
+     row.idx <- info$path$getIndices()+1
+    }
+  } else {
+     row.idx <- info$path$getIndices()+1
+		 col.idx <- GetColIdx(info$column)
+  }
+   # restrict selection from last column
+   # New code
     
-    if(!is.null(.local$start.column.select) && length(col.idx)) {
+
+   if (event[["button"]] == as.integer(1) && !is.null(.local$selections)){
+     if(typ == GdkEventType['button-release']){ # single clicked
+        if(as.flag(stat) & GdkModifierType['control-mask']){
+          stopifnot(!is.null(.local$selections) 
+            && length(.local$selections))
+         .local$selections[[length(.local$selections)]]$end <- 
+            c(row.idx=row.idx, col.idx=col.idx)
+        } else if(as.flag(stat) & GdkModifierType['shift-mask']){
+        } else {
+          stopifnot(!is.null(.local$selections))
+         .local$selections[[1]]$end <- c(row.idx=row.idx, col.idx=col.idx)
+       }
+     }
+   }
+   
+    if(as.flag(stat) & GdkModifierType['control-mask']){
+      #selectedColumns <- union(selectedColumns, col.idx)
+    } else if (!is.null(.local$start.column.select) && length(col.idx)) {
       selectedColumns <- .local$start.column.select:col.idx
     } else if (length(col.idx)) {
       selectedColumns <- col.idx
-    }# otherwise col.idx is NA 
-   UpdateColumnSelection(.local, selectedColumns)
+    }# otherwise col.idx is NA
+
+
      # This may or may not be needed. 4-10-10
    .local$rectangles <- list() # reset our rectangle-drawing
   # 3-2-10
-   UpdateSelectionRectangle(.local)     
+   UpdateSelectionRectangle(.local)
+# split into rectangles
+
+
+   # if we're still using the timeout to paint rectangles,
+   # try to remove it
+  if(!is.null(.local$do.paint.timeout)) {
+    gSourceRemove(.local$do.paint.timeout) 
+    .local$do.paint.timeout <- NULL
   }
+  }
+  return(FALSE)
 }
 
   # Sync column selection with mouse-down
@@ -2895,6 +3911,8 @@ ViewMotionNotify <- function(widget, event){
 #  while(gtkEventsPending())
 #    gtkMainIteration()  
 #  allColumns <- .local$allColumns
+  #.local$last.coord <- 
+  if(0){ # code for making pointer go to cross on drag handle
   pointer <- gdkWindowGetPointer(event[["window"]])
   pp <- gtkTreeViewGetPathAtPos(widget, event[["x"]], event[["y"]])
   dis <- gtkWidgetGetDisplay(widget)  
@@ -2903,6 +3921,7 @@ ViewMotionNotify <- function(widget, event){
     gdkWindowSetCursor(win, gdkCursorNewFromName(dis, "cross"))
   } else {
     gdkWindowSetCursor(win, gdkCursorNewFromName(dis, "arrow"))
+  }
   }
 
 #  if (as.flag(pointer$mask) & GdkModifierType["button1-mask"]){
@@ -2918,105 +3937,118 @@ ViewMotionNotify <- function(widget, event){
 }
 
 Cell3rdButtonMenu <- function(.local, row.idx, col.idx){
-  typ <-  GetClasses(.local$theFrame)[col.idx+COLUMN_OFFSET]	  
-  m <- gtkMenu()
-  cutItem <- gtkMenuItem("Cut")
-  copyItem <- gtkMenuItem("Copy (Ctrl-C)")
-  copyWithNamesItem <- gtkMenuItem("Copy With Names (Ctrl-Shift-C)")
-  pasteItem <- gtkMenuItem("Paste (Ctrl-V)")
-  m$append(cutItem)
-  m$append(copyItem)
-  m$append(copyWithNamesItem)	  
-  m$append(pasteItem)
-  lapply(c(cutItem), gtkWidgetSetSensitive, FALSE)
-  gSignalConnect(copyItem, "activate", 
-    function(...) {
-      w <- TransientWindow("Copying...", .local)
-      on.exit(w$destroy())    
-    CopyToClipboard(theFrame[GetSelectedRows(.local$view, .local), 
-    GetSelectedColumns(.local)+COLUMN_OFFSET, drop=F])
-    })
-  gSignalConnect(copyWithNamesItem, "activate", 
-    function(...) {
-       w <- TransientWindow("Copying...", .local)
-      on.exit(w$destroy())    
-     CopyToClipboard(theFrame[GetSelectedRows(.local$view, .local), 
-      GetSelectedColumns(.local)+COLUMN_OFFSET, drop=F], do.rownames=T, do.colnames=T)
-     })      
-  gSignalConnect(pasteItem, "activate", function(...) {         
-  dat <- ReadFromClipboard(row.names=NULL, fill=TRUE, sep="\t", stringsAsFactors=F) # character vector
-  task <- GetTaskPasteIn(.local$theFrame, dat, row.idx, col.idx+COLUMN_OFFSET)
-  DoTaskWrapper(.local, task)
-    
-})      
   
-  m$append(gtkSeparatorMenuItem())
-  view <- .local$view	
-  theFrame <- .local$theFrame
-  editFactorsItem <- gtkMenuItem("Edit Factors...")
-  randomizeItem <- gtkMenuItem("Randomize Selected")
-  fillItem <- gtkMenuItem("Fill Down")	  
-  fillCyclicItem <- gtkMenuItem("Fill In Cycles")
-    m$append(editFactorsItem)
-  m$append(randomizeItem)
-  m$append(fillItem)
-  m$append(fillCyclicItem)
-  if(typ != "factor")
-    lapply(c(editFactorsItem, fillCyclicItem), gtkWidgetSetSensitive, FALSE)
-  gSignalConnect(editFactorsItem, "activate", function(...) {
-   # DoFactorEditor(theFrame, .local, col.idx + COLUMN_OFFSET))
-    DoFactorEditor(theFrame, .local$toplevel, col.idx + COLUMN_OFFSET, 
-     FactorEditorHandler, data=.local)
-  })
-  gSignalConnect(randomizeItem, "activate", function(...){
-       sr <- GetSelectedRows(.local$view, .local)                            
-       if(length(sr)==0) sr <- 1:(dim(.local$theFrame)[1]-1)
-       if(length(sr)){
-         entry.frame <- theFrame[sr, GetSelectedColumns(.local)+1, drop=F]
-         entry.frame <- entry.frame[sample(1:(dim(entry.frame)[1])),,drop=F]
-         task <- list(list(func="ChangeCells", 
-            arg = list(nf=entry.frame, row.idx=sr, col.idx=GetSelectedColumns(.local)+1)))
-         DoTaskWrapper(.local, task)
-       }
-     })  
-  gSignalConnect(fillItem, "activate", function(...){
-       sr <- GetSelectedRows(.local$view, .local)
-       sc <- GetSelectedColumns(.local)+1
-       if(length(sr)==0) sr <- 1:(dim(.local$theFrame)[1]-1)  # None selected: fill the whole column
-       if(length(sr)==1) sr <- sr:(dim(.local$theFrame)[1]-1) # One selected: fill everything below
-       if(length(sr) && length(sc)){
-           # if the user's selected noncontiguous rows, we're still drawing just one selected rectangle
-           # so we want to fill the whole thing anyway           
-         sr <- range(sr)[1]:range(sr)[2]
-         entry.frame <- theFrame[sr, sc, drop=F]
-         for(jj in 1:length(sc))
-           entry.frame[,jj] <- entry.frame[1,jj]
-         task <- list(list(func="ChangeCells", 
-            arg = list(nf=entry.frame, row.idx=sr, col.idx=GetSelectedColumns(.local)+1)))
-         DoTaskWrapper(.local, task)
-       }
-     })  
-  gSignalConnect(fillCyclicItem, "activate", function(...) {
-       sr <- GetSelectedRows(.local$view, .local)
-       cc <- col.idx+COLUMN_OFFSET         
-       df1 <- dim(.local$theFrame)[1]
-       if(length(sr)==0) sr <- 1:(dim(.local$theFrame)[1]-1)  # None selected: fill the whole column
-       if(length(sr)==1) sr <- sr:(dim(.local$theFrame)[1]-1) # One selected: fill everything down              
-       if(length(sr) < 2 && df1 > 1) sr <- 1:(df1-1)
-                
-       if(length(sr)) {
-           # if the user's selected noncontiguous rows, we're still drawing just one selected rectangle
-           # so we want to fill the whole thing anyway           
-         sr <- range(sr)[1]:range(sr)[2]
-                
-         DoBlockSize(
-          theFrame[sr, cc],
-          .local$toplevel,
-          BlockSizeHandler,
-          data =  list(.local=.local, row.idx=sr, col.idx=cc), 
-          start.lvl=theFrame[sr[1], cc])
-         }
-     })
+  m <- gtkMenu()
+
+  pasteItem <- gtkMenuItem("Paste (Ctrl-V)")
+  m$append(pasteItem)
+  gSignalConnect(pasteItem, "activate", function(...)         
+    ReadFromClipboardWrapper(.local))      
+
+  if(!is.null(col.idx) && !is.null(row.idx)){
+	  cutItem <- gtkMenuItem("Cut")
+	  copyItem <- gtkMenuItem("Copy (Ctrl-C)")
+	  copyWithNamesItem <- gtkMenuItem("Copy With Names (Ctrl-Shift-C)")
+	  #m$append(cutItem)
+	  m$append(copyItem)
+	  m$append(copyWithNamesItem)	  
+	  #lapply(c(cutItem), gtkWidgetSetSensitive, FALSE)
+	  gSignalConnect(copyItem, "activate", 
+		function(...) {
+		  w <- TransientWindow("Copying...", .local)
+		  on.exit(w$destroy())    
+      nf <- GetSelectedCells(.local)
+      if(!is.null(nf))
+        CopyToClipboard(nf, 
+        do.rownames=FALSE, do.colnames=FALSE)
+    })
+	  gSignalConnect(copyWithNamesItem, "activate", 
+		function(...) {
+      w <- TransientWindow("Copying...", .local)
+      on.exit(w$destroy())   
+      nf <- GetSelectedCells(.local)
+      if(!is.null(nf))
+        CopyToClipboard(nf, 
+        do.rownames=!RowNamesAreNull(.local$theFrame), do.colnames=!ColNamesAreNull(.local$theFrame))
+    })
+	  m$append(gtkSeparatorMenuItem())
+
+	  view <- .local$view	
+	  theFrame <- .local$theFrame
+
+
+	  editFactorsItem <- gtkMenuItem("Edit Factors...")
+	  randomizeItem <- gtkMenuItem("Randomize Selected")
+	  fillItem <- gtkMenuItem("Fill Down")	  
+	  fillCyclicItem <- gtkMenuItem("Fill In Cycles")
+      m$append(editFactorsItem)
+	  m$append(randomizeItem)
+	  m$append(fillItem)
+	  m$append(fillCyclicItem)
+	  typ <- GetClasses(.local$theFrame)[col.idx+COLUMN_OFFSET]	  
+	  if(typ != "factor")
+		lapply(c(editFactorsItem, fillCyclicItem), gtkWidgetSetSensitive, FALSE)
+	  gSignalConnect(editFactorsItem, "activate", function(...) {
+	   # DoFactorEditor(theFrame, .local, col.idx + COLUMN_OFFSET))
+		DoFactorEditor(theFrame, .local$toplevel, col.idx + COLUMN_OFFSET, 
+		 FactorEditorHandler, data=.local)
+	  })
+	  gSignalConnect(randomizeItem, "activate", function(...){
+		   sr <- GetSelectedRows(.local$view, .local)                            
+		   if(length(sr)==0) sr <- 1:(dim(.local$theFrame)[1]-EXTRA_ROW)
+		   if(length(sr)){
+		     entry.frame <- theFrame[sr, GetSelectedColumns(.local)+COLUMN_OFFSET, drop=F]
+		     entry.frame <- entry.frame[sample(1:(dim(entry.frame)[1])),,drop=F]
+		     task <- list(list(func="ChangeCells", 
+		        arg = list(nf=entry.frame, row.idx=sr, col.idx=GetSelectedColumns(.local)+COLUMN_OFFSET)))
+		     DoTaskWrapper(.local, task)
+		   }
+		 })  
+	  gSignalConnect(fillItem, "activate", function(...){
+		   sr <- GetSelectedRows(.local$view, .local)
+		   sc <- GetSelectedColumns(.local)+COLUMN_OFFSET
+		   if(length(sr)==0) sr <- 1:(dim(.local$theFrame)[1]-EXTRA_ROW)  # None selected: fill the whole column
+		   if(length(sr)==1) sr <- sr:(dim(.local$theFrame)[1]-EXTRA_ROW) # One selected: fill everything below
+		   if(length(sr) && length(sc)){
+		       # if the user's selected noncontiguous rows, we're still drawing just one selected rectangle
+		       # so we want to fill the whole thing anyway           
+		     sr <- range(sr)[1]:range(sr)[2]
+		     entry.frame <- theFrame[sr, sc, drop=F]
+		     for(jj in 1:length(sc))
+		       entry.frame[,jj] <- entry.frame[1,jj]
+		     task <- list(list(func="ChangeCells", 
+		        arg = list(nf=entry.frame, row.idx=sr, col.idx=GetSelectedColumns(.local)+1)))
+		     DoTaskWrapper(.local, task)
+		   }
+		 })  
+	  gSignalConnect(fillCyclicItem, "activate", function(...) {
+		   sr <- GetSelectedRows(.local$view, .local)
+		   cc <- col.idx+COLUMN_OFFSET         
+		   df1 <- dim(.local$theFrame)[1]
+		   if(length(sr)==0) sr <- 1:(dim(.local$theFrame)[1]-EXTRA_ROW)  # None selected: fill the whole column
+		   if(length(sr)==1) sr <- sr:(dim(.local$theFrame)[1]-EXTRA_ROW) # One selected: fill everything down              
+		   if(length(sr) < 2 && df1 > 1) sr <- 1:(df1-EXTRA_ROW)
+		            
+		   if(length(sr)) {
+		       # if the user's selected noncontiguous rows, we're still drawing just one selected rectangle
+		       # so we want to fill the whole thing anyway           
+		     sr <- range(sr)[1]:range(sr)[2]
+		            
+		     DoBlockSize(
+		      theFrame[sr, cc],
+		      .local$toplevel,
+		      BlockSizeHandler,
+		      data =  list(.local=.local, row.idx=sr, col.idx=cc), 
+		      start.lvl=theFrame[sr[1], cc])
+		     }
+		 })
+  } #row.idx, col.idx != null
+
+  # if not editable, remove most options
+  if(!.local$editable)	lapply(c(pasteItem, cutItem, editFactorsItem, randomizeItem, fillItem, fillCyclicItem), gtkWidgetSetSensitive, FALSE)
+
+  lapply(c(randomizeItem, fillItem, fillCyclicItem), gtkWidgetSetSensitive, FALSE)
+
   return(m)
 }
 
@@ -3027,11 +4059,54 @@ SortHandler <- function(new.order, .local){
     theFrame <- .local$theFrame[new.order, ,drop=F]
     task <- list(
       list(func="ChangeRowNames", 
-        arg = list(theNames = rownames(theFrame), row.idx=1:(dd[1]-1))),
+        arg = list(theNames = rownames(theFrame), row.idx=1:(dd[1]-EXTRA_ROW))),
       list(func="ChangeCells", 
-        arg = list(nf=theFrame, row.idx=1:(dd[1]-1))))
+        arg = list(nf=theFrame, row.idx=1:(dd[1]-EXTRA_ROW))))
     DoTaskWrapper(.local, task)
   }
+}
+
+OpenFileWrapper <- function(fileName, .local){
+	stopifnot(!is.null(fileName) && !is.na(fileName) && nchar(fileName))
+	ext <- strsplit(fileName, "[.]")[[1]]
+	ext <- tolower(ext[length(ext)])
+	if(identical(ext, "csv")){
+	  sep <- ifelse(identical(options("OutDec")[[1]], "."), ",", ";")
+	} else if (identical(ext, "txt")) {
+	  sep <- "\t"
+	} else {
+	  sep <- ""
+	}
+
+	rfc <- ReadFromClipboard(fromFile=TRUE, fileName=fileName,
+	  sep=sep)
+	dat <- rfc$xx
+	if(!is.null(dat) && length(dim(dat))==2){
+	  dat <- MakeInternalDataFrame(rfc$xx)
+	  ReplaceEditWindow(dat, .local, kill.history=TRUE)
+    dataset.name <- basename(fileName)
+    if(nchar(ext))
+      dataset.name <- substr(dataset.name, 1, nchar(dataset.name)-nchar(ext)-1)
+    .local$dataset.name <- dataset.name
+	}
+}
+
+OpenFile <- function(menuitem, user.data){
+  .local <- user.data
+	fileName <- my.gfile(type="open", multi=F)
+	if(!is.null(fileName) && !is.na(fileName) && nchar(fileName) && file.exists(fileName)){
+	  OpenFileWrapper(fileName, .local) 
+    DoUserCall("OnLoad", list(sourc=fileName, typ="file"), .local)
+	}
+}
+
+OpenURL <- function(menuitem, user.data){
+    .local <- user.data
+    rv <- run.dialog(dlg.list=list(title="Enter URL", url.stringItem="", label = "Enter URL here"))
+   if(!is.null(rv) && nchar(rv$args$url)){
+	  OpenFileWrapper(rv$args$url, .local) 
+    DoUserCall("OnLoad", list(sourc=rv$args$url, typ="url"), .local)
+   }
 }
 
 Corner3rdButtonMenu <- function(.local){	
@@ -3043,18 +4118,19 @@ Corner3rdButtonMenu <- function(.local){
   m$append(cutItem)
   m$append(copyItem)	  
   m$append(pasteItem)
+
   m$append(gtkSeparatorMenuItem())
   gSignalConnect(copyItem, "activate", function(...) {
       w <- TransientWindow("Copying...", .local)
       on.exit(w$destroy())    
-    CopyToClipboard(MakeExternalDataFrame(theFrame, .local), do.rownames=T, do.colnames=T)
+    CopyToClipboard(MakeExternalDataFrame(theFrame, .local), do.rownames=!RowNamesAreNull(theFrame), do.colnames=!ColNamesAreNull(theFrame))
     })
   gSignalConnect(pasteItem, "activate", function(...){
-    DoPasteDialog(.local)
+      ReadFromClipboardWrapper(.local)
   })      
   lapply(c(cutItem), 
     gtkWidgetSetSensitive, FALSE)
-    
+
   renameItem <- gtkMenuItem("Rename Dataset")
   gSignalConnect(renameItem, "activate", function(...) {
      obj <- .local$rowname.column.obj$eventbox
@@ -3064,15 +4140,19 @@ Corner3rdButtonMenu <- function(.local){
         label = data$label
         getText <- obj$getText()
     	  if(nchar(getText) > 0) {
-          label$setText(getText)          
+          #label$setText(getText)          
       	  #assign(getText, MakeExternalDataFrame(.local$theFrame, .local$dataset.class), envir=.GlobalEnv)
+          oldname <- .local$dataset.name
       	  .local$dataset.name <- getText	  
              # 3-13-10
         to.external <- MakeExternalDataFrame(.local$theFrame, .local)
 				nam <- .local$dataset.name
 				# clean up spaces
-				my.assign <- function(nam)
+				my.assign <- function(nam){
 					 eval(parse(text=paste(paste(".GlobalEnv", nam, sep="$"), "<- to.external")))
+           DoUserCall("OnRename", list(name=nam, oldname=oldname), .local)
+           DoUserCall("OnLoad", list(sourc=nam, typ="rdata"), .local)
+        }
 				tryCatch({
 					my.assign(nam)
 				}, error = function(e) {  # User called it something strange
@@ -3090,32 +4170,24 @@ Corner3rdButtonMenu <- function(.local){
   )   #..
   m$append(renameItem)  
   m$append(gtkSeparatorMenuItem())  
-      
-    
-  openItem <- gtkMenuItem("Open File...")  
+          
+  openItem <- gtkMenuItem("Open File (Ctrl-O)")  
   m$append(openItem)	        
-  gSignalConnect(openItem, "activate", function(...){
-    tryCatch({	    
-      file.name <- file.choose()
-      dataset.name <- basename(file.name)
-      ww <- which(strsplit(dataset.name, "")[[1]]%in%".")        
-      if(length(ww) && rev(ww)[1] > 1)
-        dataset.name <- substr(dataset.name, 1, rev(ww)[1]-1)
+  gSignalConnect(openItem, "activate", OpenFile, data=.local)
+  
+  openURLItem <- gtkMenuItem("Open URL (Ctrl-U)")  
+  m$append(openURLItem)	        
+  gSignalConnect(openURLItem, "activate", OpenURL, data=.local)
 
-      if(nchar(dataset.name) > 0){
-        DoImportDialog(data=list(file.name=file.name,.local=.local)) 
-        ModelChangeDatasetName(.local, dataset.name)
-      }
-    }, error = function(e){warning(e)} )       
-  })      
-  saveItem <- gtkMenuItem("Save As CSV...")  
+  saveItem <- gtkMenuItem("Save As CSV... (Ctrl-S)")  
   m$append(saveItem)	        
   gSignalConnect(saveItem, "activate", function(...){
     tryCatch({	    
       theName <- paste(.local$dataset.name, "csv", sep=".")
-      theFile <- choose.files(default=theName, multi=F)
-      if(length(theFile) > 0 && nchar(theFile))
-        write.csv(MakeExternalDataFrame(.local$theFrame, .local), theFile, quote=F)
+      theFile <- my.gfile(initialfilename=theName, type="save", multi=F)
+      if(length(theFile) > 0 && nchar(theFile) && !is.na(theFile)){
+        write.csv(MakeExternalDataFrame(.local$theFrame, .local), theFile, quote=F, row.names=!RowNamesAreNull(.local$theFrame))
+      }
     }, error = function(e){warning(e)})       
   })      
       
@@ -3124,7 +4196,9 @@ Corner3rdButtonMenu <- function(.local){
   sortItem <- gtkMenuItem("Sort...")	  
   gSignalConnect(sortItem, "activate", function(...){
     dd <- dim(.local$theFrame)
-    DoSortDialog(.local$theFrame[-dd[1], -dd[2],drop=F], SortHandler, .local)
+    if (EXTRA_ROW) DoSortDialog(.local$theFrame[-dd[1], -dd[2],drop=F], SortHandler, .local)
+    else 
+      DoSortDialog(.local$theFrame[,-dd[2],drop=F], SortHandler, .local)
   })
   m$append(sortItem)
   m$append(gtkSeparatorMenuItem())
@@ -3135,14 +4209,15 @@ Corner3rdButtonMenu <- function(.local){
     if(dd1 > 1){
       task <- list(
         list(func="ChangeRowNames", 
-          arg = list(theNames = 1:(dd1-1), row.idx=1:(dd1-1))))
+          arg = list(theNames = 1:(dd1-EXTRA_ROW), row.idx=1:(dd1-EXTRA_ROW))))
       DoTaskWrapper(.local, task)
     }
-  })
+  })    
+
   m$append(ordinalItem)      
   m$append(gtkSeparatorMenuItem())
-  ordinalItem <- gtkMenuItem("Default Columns")
-  gSignalConnect(ordinalItem, "activate", function(...) {
+  ordinal2Item <- gtkMenuItem("Default Columns")
+  gSignalConnect(ordinal2Item, "activate", function(...) {
     dd2 <- dim(.local$theFrame)[2]
     if(dd2 > 2){
       task <- list(
@@ -3152,22 +4227,20 @@ Corner3rdButtonMenu <- function(.local){
     }
   })
 
-  m$append(ordinalItem)      
+  m$append(ordinal2Item)      
   m$append(gtkSeparatorMenuItem())
-  setNameItem <- gtkMenuItem("Edit Dataset Name")
-  m$append(setNameItem)	  
-  
-  lapply(c(setNameItem), gtkWidgetSetSensitive, FALSE)
+
+  #lapply(renameItem, gtkWidgetSetSensitive, FALSE)
   
   m$append(gtkSeparatorMenuItem())
   aboutItem <- gtkMenuItem("About...")
   m$append(aboutItem)	  
   gSignalConnect(aboutItem, "activate", function(...){
 	  dlg <- gtkAboutDialogNew(show=F)
-    dlg["authors"] <- c("Tom Taverner <Thomas.Taverner@pnl.gov>", 
+    dlg["authors"] <- c("Tom Taverner <t.taverner@gmail.com>", 
 "for the Department of Energy (PNNL, Richland, WA)",
 "2010, Battelle Memorial Institute", 
-"Contributions from John Verzani", 
+"Contributions from John Verzani and Liviu Andronic", 
 "RGtk2 by Michael Lawrence and Duncan Temple Lang",
 "cairoDevice by Michael Lawrence")
     dlg["program-name"] <- "RGtk2DfEdit"
@@ -3177,7 +4250,9 @@ Corner3rdButtonMenu <- function(.local){
     gtkDialogRun(dlg)
     gtkWidgetDestroy(dlg)
   })
-  	  
+
+  if(!.local$editable)	lapply(c(pasteItem, cutItem, renameItem, sortItem, ordinalItem, ordinal2Item), gtkWidgetSetSensitive, FALSE)
+    	  
   return(m)
 }
 
@@ -3186,8 +4261,9 @@ Row3rdButtonMenu <- function(.local, row.idx){
   theFrame <- .local$theFrame
   m <- gtkMenu()
   cutItem <- gtkMenuItem("Cut")
-  copyItem <- gtkMenuItem("Copy")
-  pasteItem <- gtkMenuItem("Paste")
+  copyItem <- gtkMenuItem("Copy (Ctrl-C)")
+  pasteItem <- gtkMenuItem("Paste (Ctrl-V)")
+
   m$append(cutItem)
   m$append(copyItem)
   m$append(pasteItem)
@@ -3195,13 +4271,29 @@ Row3rdButtonMenu <- function(.local, row.idx){
   gSignalConnect(copyItem, "activate", function(...) {
       w <- TransientWindow("Copying...", .local)
       on.exit(w$destroy())      
-     CopyToClipboard(theFrame[GetSelectedRows(.local$view.rn, .local),-c(1, dim(theFrame)[2]), drop=F], do.rownames=T)
+     gsr <- GetSelectedRows(.local$view.rn, .local)
+     CopyToClipboard(
+        theFrame[gsr, -c(1, dim(theFrame)[2]), drop=F], 
+        do.rownames=!RowNamesAreNull(theFrame), do.colnames=F)
      })
   gSignalConnect(pasteItem, "activate", function(...) {
-    dat <- ReadFromClipboard(row.names=1, sep="\t", stringsAsFactors=F) # character vector
-    task <- GetTaskPasteIn(.local$theFrame, dat, row.idx, 2, do.rownames= T)
-    DoTaskWrapper(.local, task)
-  })                     
+   dat <- ReadFromClipboard(.local, row.names=1, sep="\t", stringsAsFactors=F)$xx # character vector
+  if(!is.null(dat)){
+	if(!length(row.idx)) row.idx <- 1
+	col.idx <- 1
+	row.idx <- row.idx[1]
+	task <- GetTaskPasteIn(.local$theFrame, dat, row.idx, col.idx+COLUMN_OFFSET, do.colnames=F, do.rownames = F)
+	DoTaskWrapper(.local, task)
+  }
+  })                  
+
+  renameItem <- gtkMenuItem("Rename Row")
+  m$append(renameItem)  
+  m$append(gtkSeparatorMenuItem())  
+  gSignalConnect(renameItem, "activate", function(...) {
+    info <- gtkTreeViewGetCursor(.local$view.rn)
+    gtkTreeViewSetCursorOnCell(.local$view.rn, info$path, info$focus.column, info$focus.column$getCellRenderers()[[1]], TRUE)                                            
+  })                  
 
   insertItem <- gtkMenuItem("Insert")
   gSignalConnect(insertItem, "activate", function(...) {
@@ -3213,14 +4305,22 @@ Row3rdButtonMenu <- function(.local, row.idx){
   gSignalConnect(deleteItem, "activate", function(...){	  
     sr <- GetSelectedRows(.local$view.rn, .local)
     if(length(sr)){
+        # We have to block the selection-changed signal, otherwise we get a crash
+        # This is because this fires the signal off for each deleted row!
 	    task <- list(list(func="DeleteRows", arg = list(row.idx=sr)))
+	    #gSignalHandlerBlock(.local$ss.rn, .local$ss.rn.changed.signal)
+	    .local$rectangles <- list()	    
       DoTaskWrapper(.local, task)
+      #gtkTreeSelectionUnselectAll(.local$ss.rn)      
+	    #gSignalHandlerUnblock(.local$ss.rn, .local$ss.rn.changed.signal)      
     }
   })
+
   clearItem <- gtkMenuItem("Clear Contents")
   m$append(insertItem)
   m$append(deleteItem)
   m$append(clearItem)
+
   gSignalConnect(clearItem, "activate", function(...){	  	  
     row.idx <- GetSelectedRows(.local$view.rn, .local)
     RowNamesClearContents(row.idx, .local)
@@ -3229,7 +4329,7 @@ Row3rdButtonMenu <- function(.local, row.idx){
   lapply(c(cutItem), gtkWidgetSetSensitive, FALSE)
   if(!length(GetSelectedRows(.local$view.rn, .local)))	  
 	  lapply(c(deleteItem, pasteItem), gtkWidgetSetSensitive, FALSE)
-  if(row.idx == dim(theFrame)[1])	  
+  if(EXTRA_ROW && row.idx == dim(theFrame)[1])	  
 	  lapply(c(cutItem, copyItem, deleteItem, pasteItem, clearItem, cutItem), 
       gtkWidgetSetSensitive, FALSE)  
       
@@ -3250,6 +4350,8 @@ Row3rdButtonMenu <- function(.local, row.idx){
      )
     DoTaskWrapper(.local, task)      
   })    	      	                	  
+
+  if(!.local$editable)	lapply(c(pasteItem, cutItem, deleteItem, insertItem, clearItem, setAsNamesItem), gtkWidgetSetSensitive, FALSE)
   
   return(m)
 }
@@ -3287,10 +4389,11 @@ Column3rdButtonMenu <- function(.local, col.idx){
        do.colnames=T)
        })
   gSignalConnect(pasteItem, "activate", function(...) {
-    dat <- ReadFromClipboard(header=T, sep="\t", stringsAsFactors=F) # character vector
-    task <- GetTaskPasteIn(.local$theFrame, dat, 
-      1, col.idx+COLUMN_OFFSET, do.colnames= T)
-    DoTaskWrapper(.local, task)
+    #dat <- ReadFromClipboard(header=T, sep="\t", stringsAsFactors=F)$xx # character vector
+    #task <- GetTaskPasteIn(.local$theFrame, dat, 
+    #  1, col.idx+COLUMN_OFFSET, do.colnames= T)
+    #DoTaskWrapper(.local, task)
+	ReadFromClipboardWrapper(.local)
    })
 
   renameItem <- gtkMenuItem("Rename Column")
@@ -3300,30 +4403,36 @@ Column3rdButtonMenu <- function(.local, col.idx){
         col.idx = data$data
         box = data$box
         label = data$label
-        .local <- data$.local
-  
+        .local <- data$.local  
         new.name <- obj$getText()
         task <- list(list(func="ChangeColumnNames", 
          arg = list(theNames = new.name, col.idx=col.idx+COLUMN_OFFSET)))
         obj$destroy()
         box$packEnd(label, FALSE, FALSE, 0)
-        if (new.name != colnames(.local$theFrame)[col.idx+COLUMN_OFFSET])
-          DoTaskWrapper(.local, task)        
+        if (nchar(new.name) > 0 && new.name != colnames(.local$theFrame)[col.idx+COLUMN_OFFSET]){
+          DoTaskWrapper(.local, task)
+           #box$setTooltipText(new.name) 
+box$setTooltipText(paste(DEFAULT_COLNAMES[col.idx], "\n", new.name, sep=""))
+        }
         FALSE
       }, data=list(.local=.local, col.idx=col.idx))
     }
   )   #..
+
     
-  insertItem <- gtkMenuItem("Insert Column")
-  deleteItem <- gtkMenuItem("Delete Column")
-  clearItem <- gtkMenuItem("Clear Contents") 
+  insertItem <- gtkMenuItem("Insert")
+  deleteItem <- gtkMenuItem("Delete")
+  clearItem <- gtkMenuItem("Clear") 
+
   m$append(renameItem)
   m$append(gtkSeparatorMenuItem())    
   m$append(insertItem)
   m$append(deleteItem)
   m$append(clearItem)
+
   m$append(gtkSeparatorMenuItem())  
   gSignalConnect(clearItem, "activate", function(...) ColumnClearContents(GetSelectedColumns(.local)+COLUMN_OFFSET, .local))
+
   gSignalConnect(insertItem, "activate", function(...) {
      task <- list(list(func="InsertNAColumns", 
                  arg = list(col.idx=col.idx+COLUMN_OFFSET)))
@@ -3341,12 +4450,11 @@ Column3rdButtonMenu <- function(.local, col.idx){
   sortItem <- gtkMenuItem("Sort...")	  
   gSignalConnect(sortItem, "activate", function(...) {
     dd <- dim(.local$theFrame)
-    DoSortDialog(.local$theFrame[-dd[1], -dd[2],drop=F], SortHandler, .local)
+    DoSortDialog(.local$theFrame[, -dd[2],drop=F], SortHandler, .local)
   })
   m$append(sortItem)
   m$append(gtkSeparatorMenuItem())
-  
-  	  
+    	  
   lapply(c(cutItem), gtkWidgetSetSensitive, FALSE)
   if(col.idx == length(.local$allColumns)) 
     lapply(c(deleteItem), gtkWidgetSetSensitive, FALSE)
@@ -3395,11 +4503,14 @@ Column3rdButtonMenu <- function(.local, col.idx){
   }
   m$append(gtkSeparatorMenuItem())
   editFactorsItem <- gtkMenuItem("Edit Factors...")  
+
   m$append(editFactorsItem)  
   m$append(gtkSeparatorMenuItem())
   abbreviateItem <- gtkMenuItem("Shorten")
+
   m$append(abbreviateItem)
   setAsNamesItem <- gtkMenuItem("To Row Names")
+
   m$append(setAsNamesItem)
 
   gSignalConnect(editFactorsItem, "activate", function(...) 
@@ -3432,16 +4543,26 @@ Column3rdButtonMenu <- function(.local, col.idx){
   })
   
  if(lastColumn) { # disable everything except for insert
+
    lapply(m$getChildren(), gtkWidgetSetSensitive, FALSE)
    lapply(list(insertItem), gtkWidgetSetSensitive, TRUE)
   }
+
+ if(!.local$editable) { # disable everything except for insert
+   lapply(m$getChildren(), gtkWidgetSetSensitive, FALSE)
+   lapply(list(copyItem), gtkWidgetSetSensitive, TRUE)
+  }
+
   return(m)
 }
 
 # just update the dataset name when we change the text
 CornerBoxButtonPress <- function (obj, event, data){
   .local <- data$.local
-  gtkWidgetGrabFocus(.local$view)
+  #gSignalHandlerBlock(.local$ss.rn, .local$ss.rn.changed.signal)
+  #gtkWidgetGrabFocus(.local$view)
+  #gSignalHandlerUnblock(.local$ss.rn, .local$ss.rn.changed.signal)
+
     # get out of editing or selection
   button <- event[['button']]
   typ <- event[['type']]
@@ -3449,16 +4570,15 @@ CornerBoxButtonPress <- function (obj, event, data){
   col.idx <- data$col.idx
   if (button == as.integer(1)){
    if(typ == as.integer(4)){ # single clicked
-     gtkTreeViewGetSelection(.local$view.rn)$unselectAll()
-     SelectAll(.local)     
-     
-   } else if(0 && typ == as.integer(5)){ # double clicked 
+     #gtkTreeViewGetSelection(.local$view.rn)$unselectAll()
+     SelectAll(.local)
+   } else if(0 && typ == as.integer(5)){ # turned off double clicked 
     gtkWidgetSetState(.local$rowname.column.obj$button, as.integer(1))
                
     EditHeaderBox(obj, handler = function(obj, event, data){
         .local = data$.local
         box = data$box
-        label = data$label
+        label = data$labeld
         getText <- obj$getText()
     	  if(nchar(getText) > 0) {
           label$setText(getText)                                                      
@@ -3468,14 +4588,15 @@ CornerBoxButtonPress <- function (obj, event, data){
         to.external <- MakeExternalDataFrame(.local$theFrame, .local)
 				nam <- .local$dataset.name
 				# clean up spaces
-				my.assign <- function(nam)
+				my.assign <- function(nam){
 					 eval(parse(text=paste(paste(".GlobalEnv", nam, sep="$"), "<- to.external")))
+          
+        }
 				tryCatch({
 					my.assign(nam)
 				}, error = function(e) {  # User called it something strange
 					my.assign(deparse(nam))
-				})
-  
+				})  
           message(paste("RGtk2DfEdit: Creating dataset", .local$dataset.name, "in global environment."))
         }
         obj$destroy()
@@ -3508,21 +4629,26 @@ EditHeaderBox <- function(obj, handler, data){
 
   box = obj$getChildren()[[1]]
   label = box$getChildren()[[1]]
-  height = box$allocation$height
+  height = box$allocation$height-HEADER_BOX_MARGIN
+  width = box$allocation$width
   box$remove(label)
   entry <- gtkEntryNew()
   entry$setText(label$getText())
   entry$setHasFrame(FALSE)
   #entry$modifyBase(as.integer(1), selectedColumnColor)    
   entry$modifyBase(as.integer(1), as.GdkColor(c(255,255,255)*256))  
-  sapply(as.integer(0:1), function(y) entry$modifyText(y, as.GdkColor("black")))    
+  makeBlack <- function(y) entry$modifyText(y, as.GdkColor("black"))
+  sapply(as.integer(0:1), makeBlack)    
   entry$modifyBase(as.integer(1), as.GdkColor(c(255,255,255)*256))  
-  entry$setAlignment(1)
-  entry$setSizeRequest(-1, height-HEADER_BOX_MARGIN) # 1 pixel margins I guess?
-  box$packEnd(entry, FALSE, FALSE, 0)
+  #entry$setAlignment(1)
+  if(is.numeric(height) && length(height)==1 && is.numeric(width) && length(width)==1){
+    entry$setSizeRequest(width, height) # 1 pixel margins I guess?
+  }
+  box$packEnd(child=entry, expand=TRUE, fill=TRUE, padding=0)
   entry$grabFocus()
   gSignalConnect(entry, "key-press-event", function(obj, event, data=col.idx){
-    if (event[["keyval"]]%in%myValidNavigationKeys) .local$view$grabFocus()
+    #if (event[["keyval"]]%in%myValidNavigationKeys) .local$view$grabFocus()
+  if (event[["keyval"]]%in%c(GDK_Return, GDK_Escape)) .local$view$grabFocus()
     return(FALSE)
   })    
   #gSignalConnect(entry, "button-press-event", function(obj, event, data=col.idx){
@@ -3530,7 +4656,6 @@ EditHeaderBox <- function(obj, handler, data){
   #})      
   
   gSignalConnect(entry, "focus-out-event", handler, data=list(data=col.idx, box=box, label=label, .local=.local))
-  
   #gSignalConnect(entry, "unrealize", handle)  
   
   #.local$entry <- entry  
@@ -3540,38 +4665,69 @@ EditHeaderBox <- function(obj, handler, data){
 # column header clicked
 # obj is eventbox
 ColumnHeaderButtonPress <- function (obj, event, data){
-  .local <- data$.local  
-  
-  # get out of editing or selection    
+  .local <- data$.local
+  .local$draw.cursor <-FALSE
   view <- .local$view
-  view$grabFocus()    
+  if(!is.null(.local$entry)) {
+    if(!is.null(.local$entry.focus.out))
+      gSignalHandlerDisconnect(.local$entry, .local$entry.focus.out)
+
+    gtkWidgetUnrealize(.local$entry)
+    .local$entry <- NULL
+    .local$entry.focus.out <- NULL
+    gtkWidgetGrabFocus(view)
+  }
+
+  if(0 && !is.null(.local$entry)) {
+    #tryCatch({
+    if(gtkWidgetGetRealized(.local$entry))
+      gtkWidgetUnrealize(.local$entry)
+    .local$entry <- NULL
+    #}, silent=F)
+  }
+
+  if(0){
+  # get out of editing or selection    
+  # To avoid condition where column header was just pressed and 
+  # rows were previously selected, we block the changed signal
+      # kill any active entries
+
+  if(0 && !view$isFocus()) {
+	gSignalHandlerBlock(.local$ss.rn, .local$ss.rn.changed.signal)
+    view$grabFocus()
+    gtkTreeSelectionUnselectAll(.local$ss.rn)    
+	gSignalHandlerUnblock(.local$ss.rn, .local$ss.rn.changed.signal)
+  }
+  } # if 0
   view.rn <- .local$view.rn      
   model <- .local$model
   allColumns <- .local$allColumns
   
-      # kill any active entries
-  if(!is.null(.local$entry)) {
-    #tryCatch({
-    .local$entry$unrealize()  
-    .local$entry <- NULL
-    #}, silent=F)
-  }
-      
+
   # unselect the main view
-  if(length(.local$rectangles)){
+  if(0 && length(.local$rectangles)){
     .local$rectangles <- list()
-    .local$viewGetBinWindow$invalidateRect(NULL, FALSE)
+     gdkWindowInvalidateRect(.local$viewGetBinWindow, NULL, FALSE)      
   }      
-  for(tv in c(view, view.rn)){
-    pfc <- gtkTreeViewGetCursor(tv)
-    gtkTreeSelectionUnselectAll(gtkTreeViewGetSelection(tv))
-  }                         
-  
+  if(length(.local$selections)){
+    
+  }
+   #for(tv in c(view, view.rn)){
+  ##  pfc <- gtkTreeViewGetCursor(tv)
+  #  gtkTreeSelectionUnselectAll(gtkTreeViewGetSelection(tv))
+  #}                         
+  #gtkTreeSelectionUnselectAll(gtkTreeViewGetSelection(view))
+  #gtkTreeSelectionUnselectAll(gtkTreeViewGetSelection(view.rn))
+
+    # prevents cursor showing up
+  #gtkWidgetGrabFocus(gtkWidgetGetParent(.local$view))  
   button <- event[['button']]
   typ <- event[['type']]
   stat <- event[['state']]
   col.idx <- data$col.idx
   
+  #gtkTreeViewSetCursorOnCell(view, gtkTreePathNewFromString(0))
+
     # ignore d-click on last column
   # ignore if it's the end column  
   lastColumn <- col.idx == length(allColumns)
@@ -3594,58 +4750,96 @@ ColumnHeaderButtonPress <- function (obj, event, data){
         DoTaskWrapper(.local, task)        
       FALSE
     }, data=list(.local=.local, col.idx=col.idx))
-  } else if (button == as.integer(1) && typ == as.integer(4)){ # column clicked  	
-    selectedColumns <- GetSelectedColumns(.local)
-    if (stat == as.integer(0)) { # select only this column
-       selectedColumns.new <- col.idx                       
-    # extend shift-selection
-    .local$start.column.select <- col.idx
-  } else if (as.flag(stat) & GdkModifierType['shift-mask']) { # range
-    if(is.null(.local$start.column.select)){
-      .local$start.column.select <- col.idx
-    }
-    selectedColumns.new <- .local$start.column.select:col.idx  
-  } else if (as.flag(stat) & GdkModifierType['control-mask']) { # range
-     selectedColumns.new <-
-      c(union, setdiff)[[col.idx%in%selectedColumns+COLUMN_OFFSET]](selectedColumns, col.idx)
-  } else {
-    .local$start.column.select <- NULL
   }
-  UpdateColumnSelection(.local, selectedColumns.new)  
+
+  if (button == as.integer(1) && typ == as.integer(4)){ # column clicked
+   selections <- .local$selections
+   theFrameNRows <- nrow(.local$theFrame)
+   colSel <- list(start=c(row.idx=1, col.idx=col.idx),
+        end=c(row.idx=theFrameNRows, col.idx=col.idx))
+
+   selectedColumns <- GetSelectedColumns(.local)  	
+   if (as.flag(stat) & GdkModifierType['shift-mask']) { # range
+    if(is.null(selections) || !length(selections))
+      selections <- list(list(start=colSel$start))
+    # For the tricky case where we've selected a cell range
+    # and shift-click - unsure of best behavior 
+    selections[[length(selections)]]$start['row.idx'] <- 1
+    selections[[length(selections)]]$end <- colSel$end
+
+  } else if (as.flag(stat) & GdkModifierType['control-mask']) { # range
+    # Simpler: Just add the column to whatever you clicked.
+    selections <- .local$selections
+
+    if(length(selections)){
+        # we've only selected the start - bad news
+       if( length(selections[[length(selections)]]) == 1)
+         return(FALSE);
+      #if(length(selections)[[length(selections)]] == 1)
+      #  selections[[length(selections)]]$end <- 
+      #    selections[[length(selections)]]$start
+
+      xors <- get.xor.selection(selections)
+      aicx <- as.integer(colnames(xors))
+      selectedColumns <- aicx[colSums(xors)>0]
+        # if the column index is not in the range 
+        # of selected columns,
+        # we want to add it
+      whichidx <- which(aicx==col.idx)
+      # if the entire column is already selected and TRUE
+      # then set it to FALSE 
+      if(col.idx%in%selectedColumns){
+        #dont.add.flag <- TRUE
+        if(all(xors[,whichidx])
+          && nrow(xors)==theFrameNRows){
+          xors[,whichidx] <- FALSE
+          selections <- get.xor.rectangles(xors)
+        } else {
+          xors[,whichidx] <- FALSE
+          selections <- get.xor.rectangles(xors)
+          selections[[length(selections)+1]] <- colSel
+        }
+      # otherwise set the whole column to TRUE
+      } else {
+         selections[[length(selections)+1]] <- colSel
+      }
+    # if length(selections)
+    } else {
+       selections[[length(selections)+1]] <- colSel
+    }
+
+  } else {
+    gtkTreeSelectionUnselectAll(.local$ss)    
+    selections <- list()
+    selections[[length(selections)+1]] <- colSel
+ }
+ .local$selections <- selections
+  .local$do.paint <- TRUE
+
+    UpdateSelectionRectangle(.local)
+    gdkWindowInvalidateRect(.local$viewGetBinWindow, NULL, FALSE)
+
+  #return(FALSE)
+#  UpdateColumnSelection(.local, selectedColumns.new)  
 
   DoUserCall("ColumnClicked", list(idx = data$col.idx), .local)
-  DoUserCall("Selection", list(row.idx=1:(dim(.local$theFrame)[1]-1), col.idx=GetSelectedColumns(.local)-COLUMN_OFFSET), .local)          
-        
+   
   } # clicked
-  
-  selectedColumns <- GetSelectedColumns(.local)
-  if(length(selectedColumns)){
-    .local$do.paint <- TRUE
-    ma <- MergeAdjacent(sort(selectedColumns))
-    rectangles <- vector("list", ma$length)    
-    for(i in 1:ma$length){    
-      col.start <- allColumns[[selectedColumns[ma$start[i]]]]$column
-      if(ma$start[i] == ma$end[i])
-        col.end <- col.start
-      else
-        col.end <- allColumns[[selectedColumns[ma$end[i]]]]$column    
-      rect.start <- gtkTreeViewGetCellArea(view, .local$FIRST_PATH, col.start)$rect
-      rect.end <- gtkTreeViewGetCellArea(view, .local$LAST_PATH, col.end)$rect
-      rect <- gdkRectangleUnion(rect.start, rect.end)$dest
-      rect$y <- rect$y + .local$sw.view.va$getValue()
-      rect$height <- .local$sw.view.va[["upper"]]
-      rectangles[[i]] <- rect
-    }
-    .local$rectangles <- rectangles
-    .local$viewGetBinWindow$invalidateRect(NULL, FALSE)    
-  }
-          
+        
   if (button == as.integer(3)){ # our popup menu
+
+  selectedColumns <- GetSelectedColumns(.local)
+  if(!length(selectedColumns)){
+    selectedColumns.new <- col.idx
+    UpdateColumnSelection(.local, selectedColumns.new)  
+  }
+
 	  m <- Column3rdButtonMenu(.local, col.idx)
     gtkMenuPopupHack(m, button = event$GetButton(),
         activate.time = gdkEventGetTime(event))
     return(FALSE)
    }
+
   return(TRUE)
 }
 
@@ -3660,11 +4854,12 @@ SetVerticalPosition <- function(.local, value){
 # replace the entire gtktab
 # new.df is the internal DF representation
 # want to keep cursor position if it exists
-ReplaceEditWindow <- function(theFrame, .local){
+ReplaceEditWindow <- function(theFrame, .local, kill.history=FALSE){
   old.v.pos <- GetVerticalPosition(.local)
   #old.h.pos <- .local$sw.ha$getValue()   
 
   UpdateColumnSelection(.local, integer(0))       
+  if(kill.history) .local$undoStack <- NULL
   .local$theFrame <- theFrame
   gtktab.new <- MakeDFEditWindow(.local, theFrame) 
     
@@ -3674,13 +4869,15 @@ ReplaceEditWindow <- function(theFrame, .local){
   .local$start.column.select <- NULL
 
   gTimeoutAdd(50, function(){SetVerticalPosition(.local, old.v.pos); return(FALSE)})
-}      
+}
 
-NewColumnToggle <- function(model, j, width=64, is.row = F, is.editable=T, pretty_print=F, resizable=T){
+NewColumnToggle <- function(model, j, width=64, is.row = F, is.editable=T, resizable=T){
 	renderer <- gtkCellRendererToggleNew()
 	column <- gtkTreeViewColumnNew()  
-  column$packStart(renderer)
-  column$setTitle(as.character(j-1))
+    #column$packStart(renderer)
+   gtkTreeViewColumnPackStart(renderer)
+    #column$setTitle(as.character(j-1))
+    gtkTreeViewColumnSetTitle(as.character(j-1))
 	gtkTreeViewColumnSetFixedWidth(column, width)
 	gtkTreeViewColumnSetSizing(column, GtkTreeViewColumnSizing['fixed'])
 	gtkTreeViewColumnSetResizable(column, resizable)
@@ -3693,50 +4890,30 @@ NewColumnToggle <- function(model, j, width=64, is.row = F, is.editable=T, prett
 #            .Call("R_setGObjectProps", cell, list(text="NA"), PACKAGE = "RGtk2")
 #          else # ~13 microseconds, 22 if you suppress warnings
 #            .Call("R_setGObjectProps", cell, list(text=sprintf(SPRINTF_FORMAT, as.numeric(txt))), PACKAGE = "RGtk2")    
-
 # create a column with the title as the index
-NewColumn <- function(model, j, width=64, is.row = F, is.editable=T, pretty_print=F, resizable=T, SPRINTF_FORMAT="%.6G"){
+NewColumn <- function(model, j, width=64, is.row = F, is.editable=T, resizable=T, min.width=20, max.width=150){
 	renderer <- gtkCellRendererTextNew()
 	#gtkCellRendererTextSetFixedHeightFromFont(renderer, 1)
 	gObjectSetData(renderer, "column", j-1)
 	renderer['xalign'] <- 1
+    #if(is.editable){
 	renderer['editable-set'] <- TRUE
 	renderer['editable'] <- is.editable
+    #}
 	column <- gtkTreeViewColumnNewWithAttributes(as.character(j-1), renderer, text = j-1)  
 	gtkTreeViewColumnSetFixedWidth(column, width)
+    gtkTreeViewColumnSetMinWidth(column, min.width) # for min width
+    gtkTreeViewColumnSetMaxWidth(column, max.width) # for min width
 	gtkTreeViewColumnSetSizing(column, GtkTreeViewColumnSizing['fixed'])
-	gtkTreeViewColumnSetResizable(column, resizable)
-	if(identical(pretty_print, TRUE)) {
-	  cmj <- class(model[,j])
-  	if(identical(cmj, "numeric"))
-      gtkTreeViewColumnSetCellDataFunc(column, renderer, 
-        function(tree.column, cell, tree.model, iter, data){
-         x <- .RGtkCall("S_gtk_tree_model_get_value", tree.model, iter, data)$value
-         if(is.na(x))
-            .Call("R_setGObjectProps", cell, list(text="NA"), PACKAGE = "RGtk2")
-         else if(is.numeric(x))
-           .Call("R_setGObjectProps", cell, list(text=sprintf(SPRINTF_FORMAT,x)), PACKAGE = "RGtk2")
-        }, func.data=as.integer(j-1))
-    else
-      gtkTreeViewColumnSetCellDataFunc(column, renderer, 
-        function(tree.column, cell, tree.model, iter, data){ 
-         x <- .RGtkCall("S_gtk_tree_model_get_value", tree.model, iter, data)$value
-         if(is.na(x))
-            .Call("R_setGObjectProps", cell, list(text="NA"), PACKAGE = "RGtk2")
-#          else
-#           .Call("R_setGObjectProps", cell, list(text=sprintf(SPRINTF_FORMAT,x)), PACKAGE = "RGtk2")    
-        }, func.data=as.integer(j-1))
-  }        
-    
+	#gtkTreeViewColumnSetResizable(column, TRUE)
 	return(list(column=column, renderer=renderer, col.idx=j))
 }
 
 # Must be called after widget is mapped
-MakeButtonAndEventBox <- function(col.obj, label.str, handler, .local){
+MakeButtonAndEventBox <- function(col.obj, label.str,  handler, .local){
 	label <- gtkLabelNew(label.str)
-	box <- gtkHBoxNew()
+	box <- gtkVBoxNew()
 	#gtkBoxPackEnd(box, label, FALSE, FALSE, 0)
-	gtkContainerAdd(box, label)	
 	eventbox <- gtkEventBoxNew()
 	gtkContainerAdd(eventbox, box)
 	view.col <- col.obj$column
@@ -3744,14 +4921,33 @@ MakeButtonAndEventBox <- function(col.obj, label.str, handler, .local){
 	alignment <- gtkWidgetGetParent(eventbox)
 	gtkAlignmentSet(alignment, 0, 1, 1, 1)
 	col.idx <- GetColIdx(view.col)
+
+	#label2 <- gtkLabelNew(DEFAULT_COLNAMES[col.idx])
+	#gtkContainerAdd(box, label2)
+
+  box$packEnd(child=label, expand=TRUE, fill=TRUE, padding=0)
+
+	#gtkContainerAdd(box, label)
+
 	col.obj$eventbox <- eventbox
   gtkWidgetModifyBg(eventbox, as.integer(1), selectedColumnColor)
 	col.obj$button <- gtkWidgetGetParent(gtkWidgetGetParent(alignment))
 	gSignalConnect(eventbox, "button-press-event", handler, data=list(col.idx=col.idx, .local=.local))
+  if(col.idx==0) {
+    txt <- "Right-click for options"
+  } else {
+    if (DEFAULT_COLNAMES[col.idx] == label.str)
+      txt <- DEFAULT_COLNAMES[col.idx]
+    else
+      txt <- paste(DEFAULT_COLNAMES[col.idx], 
+        "\n", label.str, sep="")
+  }
+  gtkWidgetSetTooltipText(eventbox, txt)
 	return(col.obj)
 }
 
-                              
+
+# update.object: if you update the data frame at the same time                              
 UpdateDfEditor <- function(.local, theFrame, rows.changed=NULL){ 
   if (is.null(rows.changed)){
     if(ncol(theFrame) != ncol(.local$model)){
@@ -3759,33 +4955,34 @@ UpdateDfEditor <- function(.local, theFrame, rows.changed=NULL){
     } else {
       cn <- colnames(theFrame)
       for(jj in which(cn != colnames(.local$theFrame)))
-        ModelChangeColumnName(.local, jj, cn[jj])
+        ModelChangeColumnName(.local, jj, cn[jj])        
       .local$model$setFrame(theFrame)
-    }    
+    }
     .local$LAST_PATH <- MakeLastPath(theFrame)
   } else {
-     .RGtkCall("R_r_gtk_data_frame_set", .local$model, theFrame, as.list(as.integer(rows.changed - 
-     1)), F)
+     .RGtkCall("R_r_gtk_data_frame_set", .local$model, theFrame, as.list(as.integer(rows.changed - 1)), F)
   }
-  .local$theFrame <- theFrame    
-  to.external <- MakeExternalDataFrame(.local$theFrame, .local)
- 	#assign(.local$dataset.name, to.external, envir=.GlobalEnv)   
-#3-13-10
-# Change this to work with embedded lists - different choices for data names  
-  # if it's "iris", save it as iris
-  # if it's "xx$iris" and "xx" exists and is a list, save it as xx$iris
-  # if it's "abc$iris" and "abc" isn't a list, save it as "abc$iris"
-    #3-13-10
-  nam <- .local$dataset.name
-  # clean up spaces
-  my.assign <- function(nam)
-     eval(parse(text=paste(paste(".GlobalEnv", nam, sep="$"), "<- to.external")))
-	tryCatch({
-    my.assign(nam)
-	}, error = function(e) {  # User called it something strange
-    my.assign(deparse(nam))
-  })
-
+  .local$theFrame <- theFrame
+  if(identical(.local$update.frame, TRUE)){
+	  to.external <- MakeExternalDataFrame(.local$theFrame, .local)
+	 	#assign(.local$dataset.name, to.external, envir=.GlobalEnv)   
+	#3-13-10
+	# Change this to work with embedded lists - different choices for data names  
+	  # if it's "iris", save it as iris
+	  # if it's "xx$iris" and "xx" exists and is a list, save it as xx$iris
+	  # if it's "abc$iris" and "abc" isn't a list, save it as "abc$iris"
+		#3-13-10
+	  nam <- .local$dataset.name
+	  # clean up spaces
+	  my.assign <- function(nam){
+					 eval(parse(text=paste(paste(".GlobalEnv", nam, sep="$"), "<- to.external")))
+        }
+		tryCatch({
+		my.assign(nam)
+		}, error = function(e) {  # User called it something strange
+		my.assign(deparse(nam))
+	  })
+  }
 }
 
 ModelChangeColumnName <- function(.local, idx, new.name)
@@ -3796,11 +4993,14 @@ ModelChangeColumnName <- function(.local, idx, new.name)
     # MUST BE DONE AFTER VIEW IS MAPPED
 InitColumn <- function(.local, col.obj, nam){
   col.obj <- MakeButtonAndEventBox(col.obj, label.str=nam, handler=ColumnHeaderButtonPress, .local=.local)
-  gSignalConnect(col.obj$renderer, "editing-started", function(renderer, editable, path, data=list(.local=.local)){
+  if(0) gSignalConnect(col.obj$renderer, "editing-started", function(renderer, editable, path, data=list(.local=.local)){
     #.local <- data$.local
+#print("started")
     FALSE
   })
-  if(0) gSignalConnect(col.obj$renderer, "editing-started", function(renderer, entry, path, data) {
+
+  #if(1) gSignalConnect(col.obj$renderer, "editing-started", function(renderer, entry, path, data) {
+
 #  print("Here")
 #       gSignalConnect(entry, "map-event", function(entry, event, data=.local){ 
 #print("A")
@@ -3817,8 +5017,11 @@ InitColumn <- function(.local, col.obj, nam){
 #    gtkEditableSelectRegion(entry, insertion_point, insertion_point)
 #    return(TRUE)  
 # })      
-  }, data=list(col.idx=col.obj$col.idx, .local=.local))
-  gSignalConnect(col.obj$renderer, "editing-started", after=T, RendererEditingStarted, data=list(col.idx=col.obj$col.idx, .local=.local))
+#  }, data=list(codl.idx=col.obj$col.idx, .local=.local))
+
+
+
+  if(1) gSignalConnect(col.obj$renderer, "editing-started", after=T, RendererEditingStarted, data=list(col.idx=col.obj$col.idx, .local=.local))
   col.obj$state.set <- NULL    
   return(col.obj)
 }  
@@ -3831,7 +5034,7 @@ InitAllColumns <- function(.local, model, allColumns){
   }
   # The last column is not editable
   allColumns[[j]]$renderer['editable'] <- FALSE 
-  allColumns[[j]]$column$setResizable(FALSE)
+  gtkTreeViewColumnSetResizable(allColumns[[j]]$column, FALSE)
   #gtkWidgetModifyBg(allColumns[[j]]$eventbox, as.integer(1), bgColor)    		  
   return(allColumns)
 }
@@ -3856,32 +5059,75 @@ MakeAVerticalScrollbar <- function(.local, gtktab, va){
   return(vbar)
 }
 
-	
+
+RowNamesExpose <- function(widget, event=NULL, data=NULL){
+  .local <- data
+  if(.local$do.paint && DO_CAIRO){
+    currentVadj <- gtkAdjustmentGetValue(.local$sw.view.va) # this 
+    for(r in .local$rn.rectangles){
+     r$y <- r$y - currentVadj
+      selectedColorRgb <- c(49, 106, 197)
+      cr <- gdkCairoCreate(.local$view.rnGetBinWindow)
+      cairoSetSourceRgba(cr, selectedColorRgb[1]/256, 
+        selectedColorRgb[2]/256, selectedColorRgb[3]/256, 0.2)    
+      cairoRectangle(cr, r$x, r$y+1, r$width, r$height)
+      cairoClip(cr)
+      cairoPaint(cr)
+    }
+  }
+  return(FALSE)
+}
+
+
 ViewExpose <- function(widget, event=NULL, data=NULL){
   .local <- data
+  isWindows <- PLATFORM_OS_TYPE == "windows"
   if(.local$do.paint){  
   #cat("*")
-    sw.va <- .local$sw.view.va
-    currentVadj <- gtkAdjustmentGetValue(sw.va) # this gets called *before* value-changed
+    currentVadj <- gtkAdjustmentGetValue(.local$sw.view.va) # this gets called *before* value-changed
+
     for(r in .local$rectangles){
       r$y <- r$y - currentVadj
-      r1 <- r
-      if(r1$height > 0 && r1$width > 0){
-        if(DO_CAIRO){
-          selectedColorRgb <- c(49, 106, 197)
-          cr <- gdkCairoCreate(.local$viewGetBinWindow)
-          cairoSetSourceRgba(cr, selectedColorRgb[1]/256, 
-            selectedColorRgb[2]/256, selectedColorRgb[3]/256, 0.2)      
-          cr$rectangle(r1$x, r1$y, r1$width, r1$height)
-          cr$clip()
-          cr$paint()
-        }
-        gdkDrawRectangle(.local$viewGetBinWindow, .local$gc.invert, filled = F, r1$x, r1$y, r1$width, r1$height)          
-        #rwid = 2
-        #gdkDrawRectangle(.local$viewGetBinWindow, .local$gc.invert, filled = T, r1$x+r1$width-rwid, r1$y+r1$height-rwid, 2*rwid, 2*rwid)
-      }
+      gdkDrawRectangle(.local$viewGetBinWindow, .local$gc.invert, filled = F,
+         ifelse(isWindows, r$x, r$x-1),
+         ifelse(isWindows, r$y, r$y),
+         r$width+2,
+         ifelse(isWindows, r$height+2, r$height))
     }
+
+   if(DO_CAIRO) {
+    for(r in .local$rectangles){
+      r$y <- r$y - currentVadj
+      selectedColorRgb <- c(49, 106, 197)
+      cr <- gdkCairoCreate(.local$viewGetBinWindow)
+      cairoSetSourceRgba(cr, selectedColorRgb[1]/256, 
+        selectedColorRgb[2]/256, selectedColorRgb[3]/256, 0.2)    
+#      cairoRectangle(cr, r$x, r$y+1, r$width, r$height)
+      cairoRectangle(cr,
+        r$x,
+        r$y+1,
+        ifelse(isWindows, r$width+2, r$width),
+        ifelse(isWindows, r$height+2, r$height))
+      cairoClip(cr)
+      cairoPaint(cr)
+    }
+  }
+
   } # display mode
+
+  if(.local$draw.cursor){
+  # Draw the cursor
+  cursor.info <- gtkTreeViewGetCursor(widget)
+  path <- cursor.info$path
+  column <- cursor.info$focus.column
+  if(is.null(.local$entry) && !is.null(path) && !is.null(column)){
+	  rect <- gtkTreeViewGetCellArea(widget, path, column)$rect
+    gdkDrawRectangle(.local$viewGetBinWindow, .local$gc.cursor, filled = F, rect$x, rect$y +1, rect$width, 
+    ifelse(isWindows, rect$height-1, rect$height-2))
+    gdkDrawRectangle(.local$viewGetBinWindow, .local$gc.cursor, filled = T, rect$x+rect$width-4, rect$y+rect$height-1-3, 4, 3)
+  }
+ }
+
   return(FALSE)
 }
 
@@ -3902,28 +5148,27 @@ DoScrollUpdate <- function(obj, evt, data){
   FALSE
 }  
 
-MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.width=64){  
+MakeDFEditWindow <- function(.local, theFrame, size.request=c(600, 300), col.width=64){  
 
   .local$allColumns	<-	NULL
   .local$allow.key.flag	<-	TRUE
   .local$col.width	<-	col.width
-  .local$disconnected.scrollID	<-	TRUE
-  .local$disconnected.scrollID	<-	TRUE
   .local$do.paint	<- TRUE
-  .local$do.rendererEditingStarted	<-	TRUE
   .local$doing.scroll	<-	FALSE
   .local$doingEntryIntoFactor	<-	FALSE
   .local$doingHScroll	<-	FALSE
   .local$FIRST_PATH	<-	gtkTreePathNewFromString(0)
   .local$flash.cursor	<-	TRUE
   .local$last.time	<-	0
+  .local$last.place.clicked	<-	NULL
   .local$LAST_PATH	<-	NULL
   .local$model	<-	NULL
   .local$SCROLL_ROW_TIMEOUT	<-	150
   .local$scrollID	<-	0
-
+  .local$draw.cursor <- TRUE
   .local$theFrame <- theFrame
   
+
   sw.view <- gtkScrolledWindowNew()
   .local$sw.view <- sw.view
   sw.view$setPolicy(GtkPolicyType['never'], GtkPolicyType['never'])
@@ -3933,28 +5178,30 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
   dataset.name <- .local$dataset.name
   .local$model <- rGtkDataFrame()
   view <- gtkTreeViewNewWithModel(.local$model)  
-  
   .local$model$setFrame(.local$theFrame)  # This is causing a memory leak...
-        
+
   gtktab <- gtkTableNew(2,2, FALSE)   
   .local$mapped <- FALSE
-  .local$view <- view  
+  .local$view <- view
   gtkTreeViewSetFixedHeightMode(view, TRUE)
   allColumns <- vector("list", (dim(theFrame)[2]-1))                    
 
   view.rn <- gtkTreeViewNewWithModel(.local$model)
   .local$view.rn <- view.rn  
   view.rn$SetFixedHeightMode(TRUE)
-  rowname.column.obj <- NewColumn(.local$model, 1, width=10, is.row=T, resizable=F)
+  rowname.column.obj <- NewColumn(.local$model, 1, width=10, is.row=T, resizable=F, is.editable=.local$editable)
   .local$rowname.column.obj <- rowname.column.obj
   gtkTreeViewAppendColumn(view.rn, rowname.column.obj$column)
-                      
+
+  col.sizing <- ifelse(identical(.local$autosize, TRUE), 'autosize', 'fixed')
   for(j in 2:(dim(.local$model)[2])){
-    tmp <- NewColumn(.local$model, j, pretty_print=.local$pretty_print, width=col.width, SPRINTF_FORMAT = .local$SPRINTF_FORMAT)
+    tmp <- NewColumn(.local$model, j, width=col.width, is.editable=T)#.local$editable)
     gtkTreeViewAppendColumn(view, tmp$column)
+    gtkTreeViewColumnSetSizing(tmp$column, GtkTreeViewColumnSizing[col.sizing])
+	gtkTreeViewColumnSetResizable(tmp$column, TRUE)
     allColumns[[j-1]] <- tmp
-  }                                              
-                                   
+  }       
+
   ss <- view$getSelection()
   .local$ss <- ss  
   ss$setMode(as.integer(3)) # multiple
@@ -3969,10 +5216,19 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
   
   ss.rn <- view.rn$getSelection()
   # 09-16-10 - this is screwing up memory caching
-  gSignalConnect(ss.rn, "changed",     function(treeselection, data){
-      w <- TransientWindow("Updating Selection...", .local)
-      on.exit(w$destroy())    
-      PaintRowSelectionOnTimeout(.local)
+  # 10-21-10 - this is causing a crash on row deletion
+  if(0) .local$ss.rn.changed.signal <- gSignalConnect(ss.rn, "changed",  function(treeselection, data){
+##print(.local$allow.key.flag)
+#      .local$allow.key.flag <- FALSE
+     #w <- TransientWindow("Updating Selection...", .local)
+#     # on.exit(w$destroy())  
+      #PaintRowSelectionOnTimeout(.local)
+      PaintSelectionOnTimeout(.local, selection=treeselection, widget=.local$view.rn)
+      #.local$allow.key.flag <- TRUE
+#     if(.local$do.paint){
+#       .local$viewGetBinWindow$invalidateRect(NULL, FALSE)      
+#      .local$do.paint <- FALSE
+#     }
     }
   )             
 
@@ -3985,30 +5241,42 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
   sw.rn$setPolicy(GtkPolicyType['never'], GtkPolicyType['never'])
   sw.rn.va <- sw.rn$getVadjustment()
   .local$sw.rn.va <- sw.rn.va
-  
-  if(1){
-  gtkWidgetModifyBase(view, GtkStateType['selected'],  whiteColor)
-  gtkWidgetModifyBase(view, GtkStateType['active'], whiteColor)
+
+#if(0){
+  for(ii in as.integer(0:4))
+  gtkWidgetModifyBase(view, ii,  whiteColor)
+  #gtkWidgetModifyBase(view, GtkStateType['active'], whiteColor)
   gtkWidgetModifyText(view, GtkStateType['selected'], as.GdkColor("black"))
   gtkWidgetModifyText(view, GtkStateType['active'], as.GdkColor("black"))
-                        
   sapply(list(view, view.rn), function(x){
-    sapply(list(GtkStateType['active'],  
-        GtkStateType['selected'], GtkStateType['normal']), 
+    sapply(as.integer(0:4), 
       function(y) gtkWidgetModifyFg(x, y, as.GdkColor("black")))
   })
 
-  gtkWidgetModifyBase(view.rn, GtkStateType['normal'], bgColor)
-  gtkWidgetModifyBase(view.rn, GtkStateType['selected'], selectedColor)
-  gtkWidgetModifyBase(view.rn, GtkStateType['active'], selectedColor)
+  # It would be nice to change the background raised appearance
+  # for selected rows
+
+  #img_pixbuf = gdkPixbufNewFromFile(image_filename)
+  #img_pixbuf <- gdkPixbufNew("GDK_COLORSPACE_RGB", FALSE, 8, 1, 1)
+#img_pixmap = img_pixbuf.render_pixmap_and_mask()[0]
+#for state in (gtk.STATE_NORMAL, gtk.STATE_ACTIVE, #gtk.STATE_PRELIGHT,
+#              gtk.STATE_SELECTED, gtk.STATE_INSENSITIVE):
+#    style$bg_pixmap[state] = img_pixmap
+#treeview.set_style(style)
+
+  for(ii in as.integer(0:4))
+  gtkWidgetModifyBase(view.rn, ii, bgColor)
+
   gtkWidgetModifyText(view.rn, GtkStateType['selected'], as.GdkColor("black"))
   gtkWidgetModifyText(view.rn, GtkStateType['active'], as.GdkColor("black"))  
-  }
+#}
   view.rn$setEnableSearch(FALSE)
   view$setEnableSearch(FALSE)  
-  
+
   #view$setGridLines(as.integer(3))  
   #view.rn$setGridLines(as.integer(3))    
+
+  .local$style <- view$getStyle
 
   paned <- gtkHPanedNew()
   paned$add1(sw.rn)
@@ -4029,23 +5297,42 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
     if(.local$mapped) return(TRUE)
     .local$mapped <- TRUE    
     .local$do.paint <- FALSE        
+    #.local$rowname.column.obj <- MakeButtonAndEventBox(.local$rowname.column.obj, 
+    # label.str=.local$dataset.name, handler=CornerBoxButtonPress, .local=.local)      
+    # Change the displayed name to "" to avoid confusion.
     .local$rowname.column.obj <- MakeButtonAndEventBox(.local$rowname.column.obj, 
-      label.str=.local$dataset.name, handler=CornerBoxButtonPress, .local=.local)      
+      label.str="", handler=CornerBoxButtonPress, .local=.local)            
              
     allColumns <- InitAllColumns(.local, .local$model, allColumns)
     .local$allColumns <- allColumns    
   
-    gSignalConnect(view,"key-press-event", ViewKeyPress, data=.local)  
+   gSignalConnect(view,"key-press-event", ViewKeyPress, data=.local)  
+   #gSignalConnect(view,"key-release-event", ViewKeyRelease, data=.local)  
+
     gSignalConnect(view,"button-press-event", ViewButtonPress, data=.local)
     gSignalConnect(view,"button-release-event", after=T, ViewButtonRelease, data=.local)    
     #gSignalConnect(view,"motion-notify-event", ViewMotionNotify)  
     gSignalConnect(view.rn,"key-press-event", RowNamesKeyPress, data=.local)          
     gSignalConnect(view.rn,"button-press-event", RowNamesButtonPress, data=.local)
-    
+
+#gSignalConnect(view.rn,"button-press-event", function(...) {print("called"); return(FALSE)}, data=.local)
+
       # tree_view != NULL failed
-  	gSignalConnect(view.rn, "focus-in-event", function(...) {gtkTreeSelectionUnselectAll(.local$ss) })
-  	gSignalConnect(view, "focus-in-event", function(...) {gtkTreeSelectionUnselectAll(.local$ss.rn) })  	
-            
+  	gSignalConnect(view.rn, "focus-in-event", function(...) {
+      .local$draw.cursor <- FALSE
+       return(FALSE)
+      #gtkTreeSelectionUnselectAll(.local$ss)
+    })
+
+  	gSignalConnect(view, "focus-in-event", function(...) {
+     .local$draw.cursor <- TRUE
+     gtkTreeSelectionUnselectAll(.local$ss.rn)
+     return(FALSE)
+    })
+  
+    #gSignalConnect(view, "cursor-changed", ViewCursorChanged, data=.local)
+      
+
     rows.renderer <- view.rn$getColumns()[[1]]$getCellRenderers()[[1]] 
     .local$rows.renderer <- rows.renderer      
     gSignalConnect(rows.renderer,"edited", function(renderer, path, new.text){ 
@@ -4059,6 +5346,8 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
     })
 
     gSignalConnect(view, "expose-event", after=T, ViewExpose, data=.local)    
+    #gSignalConnect(view.rn, "expose-event", after=T, RowNamesExpose, data=.local)    
+
     gSignalConnect(view, "scroll-event", after=T, DoScrollUpdate, data=.local)
     gSignalConnect(view.rn, "scroll-event", after=T, DoScrollUpdate, data=.local)    
     
@@ -4067,7 +5356,15 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
       function(evt) gSignalConnect(view, evt, RemoveHScrollTimeout, data=.local)) 
       
     .local$viewGetBinWindow <- view$getBinWindow()		      
+
+
+    .local$view.rnGetBinWindow <- view.rn$getBinWindow()		      
+
     .local$gc.invert <- gdkGCNew(.local$viewGetBinWindow) 
+    .local$gc.invert$setFunction('GDK_INVERT')
+
+    .local$gc.cursor <- gdkGCNew(.local$viewGetBinWindow) 
+    .local$gc.cursor$setLineAttributes(line.width=1, line.style=integer(3), cap.style=integer(0), join.style=integer(0))
 
 
     toplevel <- .local$group.main$getToplevel()
@@ -4082,10 +5379,12 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
     settings[["gtk-dnd-drag-threshold"]] <- 10000
     checkPtrType(view, "GtkTreeView")              
     .local$scrollRowNames <- TRUE
-    gSignalConnect(sw.view.va, "value-changed",  function(obj, data){
+
+    sw.va.value.ch <- function(obj, data){
       sw2 <- data$sw2
       .local <- data$.local        
-      if(identical(.local$scrollRowNames, TRUE)){
+      if(!is.null(.local$scrollRowNames) 
+         && .local$scrollRowNames){
           # Take over the event loop
           # See http://wiki.laptop.org/go/PyGTK/Smooth_Animation_with_PyGTK
         while(gtkEventsPending())
@@ -4093,7 +5392,9 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
         gtkAdjustmentSetValue(sw2, gtkAdjustmentGetValue(obj))
         .local$allow.key.flag <- TRUE  # For paging, however, this has a problem...
       }
-    }, data=list(sw2=sw.rn.va, .local=.local))
+    }
+
+    gSignalConnect(sw.view.va, "value-changed", sw.va.value.ch, data=list(sw2=sw.rn.va, .local=.local))
     
     # for some reason the last column doesn't get alignment set properly
   	alignment <- gtkWidgetGetParent(allColumns[[length(allColumns)]]$eventbox)
@@ -4101,6 +5402,7 @@ MakeDFEditWindow <- function(.local, theFrame, size.request=c(500, 300), col.wid
      	
     return(TRUE)  
   }) # end of map event callback
+
        
   return(gtktab)
 } # end MakeDFEditWindow
@@ -4131,18 +5433,26 @@ ConvertToDataObj <- function(items){
 #' @return An object of class GtkDfEdit for which a few RGtk2-style methods are defined
 #' @export
 gtkDfEdit <- function(items, dataset.name = deparse(substitute(items)), 
-  size.request=c(500, 300), col.width = 64, pretty_print=TRUE, sprintf_format = "%.6G",
-  dataset.class="data.frame", envir=.GlobalEnv){
+  size.request=c(600, 300), col.width = 64,
+  dataset.class="data.frame", editable = TRUE, 
+  autosize = length(dim(items)) < 2 || ncol(items)<25,
+  update=TRUE,
+  envir=.GlobalEnv, ...){
    # our local environment
   #print(dim(.local$items))
   .local <- new.env()
   .local$items <- items
   .local$dataset.name <- dataset.name
   .local$dataset.class <- class(items)
-  .local$pretty_print <- pretty_print     
 
-  tryCatch(sprintf(sprintf_format, pi), error = function(e) stop(e$message))
-  .local$SPRINTF_FORMAT <- sprintf_format
+  stopifnot(editable %in% c(TRUE, FALSE))
+  .local$editable <- editable
+
+  stopifnot(autosize %in% c(TRUE, FALSE))
+  .local$autosize <- autosize
+
+  stopifnot(update %in% c(TRUE, FALSE))
+  .local$update.frame <- update
     
   .local$dataset.attributes <- attributes(items)
     
@@ -4173,7 +5483,8 @@ gtkDfEdit <- function(items, dataset.name = deparse(substitute(items)),
     } 
    }       
     
-  .local$theFrame <- MakeInternalDataFrame(.local$items)  
+  .local$theFrame <- MakeInternalDataFrame(.local$items, add.rows=EXTRA_ROW)  
+
   .local$items <- NULL
       
   .local$theStack	<-	list()        
@@ -4187,6 +5498,9 @@ gtkDfEdit <- function(items, dataset.name = deparse(substitute(items)),
   group.main$setData(".local", .local) # use getData
   class(group.main) <- c("GtkDfEdit", class(group.main))
 
+  gSignalConnect(group.main, "map", function(...)
+    DoUserCall("OnLoad", list(sourc=dataset.name, typ="rdata"), .local)
+  )
 #  gSignalConnect(group.main, "destroy", function(obj, ...){
 #    print("Destroyed")
 #    #browser()
@@ -4196,6 +5510,7 @@ gtkDfEdit <- function(items, dataset.name = deparse(substitute(items)),
 #    obj$setData(".local", NULL)
 ##    print(gc()[2,2])
 #  })
+
   return(group.main)
 }
 
@@ -4237,7 +5552,7 @@ gtkDfEditGetModel <- function(object) {
 #' @return Returns the number of rows and columns -- not counting row names
 #' @export
 gtkDfEditGetDimension <- function(object) {
-  dim(object$getModel()) - c(1,2)       # rownames
+  dim(object$getModel()) - c(EXTRA_ROW,2)       # rownames
 }
 
 #' Return the columns of the RGtk2DfEdit object
@@ -4264,6 +5579,7 @@ gtkDfEditGetRowNames <- function(object) {
 
 #' Return a data frame from the RGtk2DfEdit object
 #'
+
 #' @param object The RGtk2DfEdit object
 #' @return Returns the data frame with row names and column names
 #' @export
@@ -4329,6 +5645,7 @@ gtkDfEditDoTask <- function(x, task){
   }
 }
 
+
 gtkDfEditUndo <- function(x){
   DoUndo(x$getData(".local"))
 }    
@@ -4337,7 +5654,7 @@ gtkDfEditUndo <- function(x){
 gtkDfEditSort <- function(x){
   l <- x$getData(".local")
   dd <- dim(l$theFrame)
-  DoSortDialog(l$theFrame[-dd[1], -dd[2],drop=F], SortHandler, l)
+  DoSortDialog(l$theFrame[, -dd[2],drop=F], SortHandler, l)
 }
 
 gtkDfEditEditFactors <- function(x){

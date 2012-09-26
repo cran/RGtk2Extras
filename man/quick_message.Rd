@@ -5,12 +5,12 @@
 Create a modal message box.
 }
 \usage{
-quick_message(message="", win=NULL, caption="Warning")
+quick_message(message="", caption="Warning", win=NULL)
 }
 \arguments{
 \item{message}{message to use}
-\item{win}{gtkWindow}
 \item{caption}{caption for window}
+\item{win}{gtkWindow}
 }
 \details{
 Create a quick message box.
